@@ -44,7 +44,12 @@
 - [x] Phase 1 — 창에 글자 그리기: winit 창 + wgpu glyph atlas 렌더링, 키 입력 → PTY
   - 확인됨: 창 오픈, 셸 프롬프트 컬러 렌더링(powerline 배경색 포함), 블록 커서, OSC 창 제목 반영
   - 알려진 한계: 한글 IME 미지원(Phase 2), powerline 전용 글리프 등 폰트 폴백 없음, `ESC k`(screen 제목 시퀀스) 잔여물 'k' 표시
-- [ ] Phase 2 — 쓸 수 있는 터미널: 스크롤백, 선택/클립보드, 트루컬러, 커서, 리사이즈/reflow, IME(한글 입력)
+- [x] Phase 2 — 쓸 수 있는 터미널: 스크롤백, 선택/클립보드, 트루컬러, 커서, 리사이즈/reflow, IME(한글 입력)
+  - 스크롤백 10,000줄 + 휠 스크롤(대체 스크린에서는 화살표 변환), 입력 시 자동 하단 스크롤
+  - 마우스 선택(단일/단어/줄 — 클릭 횟수), Cmd+C/V(bracketed paste), OSC 52 클립보드
+  - 한글 IME: preedit 오버레이 렌더링 + 커서 위치에 후보창 배치, 폰트 폴백(Apple SD Gothic Neo)
+  - PUA(powerline 아이콘)는 주 폰트에서만 찾도록 제한 (폴백 오검출 방지)
+  - 남은 것: 마우스 리포팅(vim 등 앱으로 마우스 이벤트 전달), 검색, ScaleFactorChanged 대응
 - [ ] Phase 3 — 셸 통합: OSC 133 마킹(zsh/bash 스크립트 제공), 프롬프트 점프
 - [ ] Phase 4 — 블록 UI: 명령+출력 블록 단위 접기/복사/검색/북마크 (차별화 ①)
 - [ ] Phase 5 — 탭/분할: 네이티브 페인 분할, 페인 줌, 선언적 레이아웃(Zellij 참고) (차별화 ②-a)
