@@ -684,11 +684,24 @@ impl Renderer {
                     fg = DEFAULT_BG;
                 }
 
+                let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
                 if is_cursor || selected || bg != DEFAULT_BG {
-                    let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
                     bg_instances.push(BgInstance {
                         rect: [x, y, self.cell_width * width_cells, self.cell_height],
                         color: [bg[0], bg[1], bg[2], 1.0],
+                    });
+                }
+
+                // OSC 8 하이퍼링크: 밑줄로 클릭 가능함을 표시
+                if indexed.hyperlink().is_some() {
+                    bg_instances.push(BgInstance {
+                        rect: [
+                            x,
+                            y + self.cell_height - 2.0,
+                            self.cell_width * width_cells,
+                            1.5,
+                        ],
+                        color: [fg[0], fg[1], fg[2], 1.0],
                     });
                 }
 

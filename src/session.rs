@@ -267,6 +267,10 @@ impl Session {
 
 const OSC133_PREFIX: &[u8] = b"\x1b]133;";
 
+/// Synchronized output (DEC private mode 2026)의 진입/종료 시퀀스.
+/// 공통 프리픽스 뒤 'h'(진입) 또는 'l'(종료).
+const SYNC_PREFIX: &[u8] = b"\x1b[?2026";
+
 fn reader_loop(
     mut stream: std::os::unix::net::UnixStream,
     term: Arc<FairMutex<Term<EventProxy>>>,
@@ -275,6 +279,9 @@ fn reader_loop(
 ) {
     let mut parser = Processor::new();
     let mut scanner = Osc133Scanner::default();
+    // synchronized output 상태: sync 중에는 redraw를 억제하고, 종료 시 한 번에 그린다.
+    let mut sync = false;
+    let mut sync_carry: Vec<u8> = Vec::new();
 
     loop {
         match mux::read_msg(&mut stream) {
@@ -283,7 +290,11 @@ fn reader_loop(
                     let mut term = term.lock();
                     scanner.process(&mut term, &mut parser, &marks, &data);
                 }
-                proxy.send_event(Event::Wakeup);
+                // mode 2026 진입/종료를 감시해 프레임 원자성을 확보한다.
+                sync = watch_sync(sync, &mut sync_carry, &data);
+                if !sync {
+                    proxy.send_event(Event::Wakeup);
+                }
             }
             // 셸 종료
             Ok(MuxMsg::Exit) => break,
@@ -292,6 +303,32 @@ fn reader_loop(
         }
     }
     proxy.send_event(Event::Exit);
+}
+
+/// 청크에서 mode 2026 진입(`h`)/종료(`l`)를 감지해 최신 sync 상태를 돌려준다.
+/// 청크 경계에 걸친 시퀀스를 위해 carry에 최대 7바이트를 이월한다.
+fn watch_sync(prev: bool, carry: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    let mut scan = std::mem::take(carry);
+    scan.extend_from_slice(chunk);
+
+    let mut state = prev;
+    let plen = SYNC_PREFIX.len();
+    if scan.len() > plen {
+        for i in 0..=scan.len() - plen - 1 {
+            if &scan[i..i + plen] == SYNC_PREFIX {
+                match scan[i + plen] {
+                    b'h' => state = true,
+                    b'l' => state = false,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 다음 경계용 carry: 끝 (plen)바이트 유지
+    let keep = plen.min(scan.len());
+    *carry = scan[scan.len() - keep..].to_vec();
+    state
 }
 
 #[derive(Default)]

@@ -395,6 +395,30 @@ impl App {
         }
     }
 
+    /// 클릭 위치 셀에 OSC 8 하이퍼링크가 있으면 열고 true를 돌려준다.
+    fn open_hyperlink_at(&self, pos: PhysicalPosition<f64>) -> bool {
+        let Some(state) = &self.state else {
+            return false;
+        };
+        let Some((pane_id, rect)) = Self::pane_at(state, pos) else {
+            return false;
+        };
+        let Some(pane) = state.active_tab().root.pane(pane_id) else {
+            return false;
+        };
+        let (point, _) = Self::grid_point(pane, rect, state, pos);
+        let uri = {
+            let term = pane.session.term.lock();
+            term.grid()[point].hyperlink().map(|h| h.uri().to_string())
+        };
+        if let Some(uri) = uri {
+            // macOS `open`으로 기본 앱에서 연다
+            let _ = std::process::Command::new("open").arg(&uri).spawn();
+            return true;
+        }
+        false
+    }
+
     /// 클릭한 위치가 속한 블록 전체를 선택한다 (Cmd+클릭).
     fn select_block_at(&mut self, pos: PhysicalPosition<f64>) {
         let Some(state) = &self.state else { return };
@@ -927,8 +951,12 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                     }
                 }
-                // Cmd+클릭: 블록 전체 선택
+                // Cmd+클릭: 하이퍼링크(OSC 8) 열기, 없으면 블록 전체 선택
                 if button_state == ElementState::Pressed && self.modifiers.state().super_key() {
+                    if self.open_hyperlink_at(self.mouse_pos) {
+                        self.left_button_down = false;
+                        return;
+                    }
                     self.select_block_at(self.mouse_pos);
                     self.left_button_down = false;
                     return;
