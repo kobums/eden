@@ -1,118 +1,175 @@
-//! Phase 0: headless로 PTY 위에 셸을 띄우고, 터미널 그리드 상태를 확인한다.
+//! Phase 1: winit 창 + wgpu 렌더러 + 키보드 입력 → PTY.
 //!
-//! 목표는 `셸 → PTY → VT 파서 → 그리드` 파이프라인이 alacritty_terminal로
-//! 실제로 동작하는지 검증하는 것. 렌더러가 붙기 전까지의 코어 루프다.
+//! `셸 → PTY → 파서 → 그리드`(Phase 0) 위에 `그리드 → GPU 렌더링`과
+//! `키 입력 → PTY`를 연결해 눈으로 보고 타이핑할 수 있는 터미널을 만든다.
 
-use std::borrow::Cow;
-use std::sync::mpsc;
+mod renderer;
+mod session;
+
 use std::sync::Arc;
-use std::time::Duration;
 
-use alacritty_terminal::event::{Event, EventListener, WindowSize};
-use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
-use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::tty;
+use alacritty_terminal::event::{Event as TermEvent, WindowSize};
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::window::{Window, WindowId};
 
-/// 터미널 이벤트를 채널로 전달하는 리스너.
-#[derive(Clone)]
-struct EventProxy(mpsc::Sender<Event>);
+struct State {
+    window: Arc<Window>,
+    renderer: renderer::Renderer,
+    session: session::Session,
+}
 
-impl EventListener for EventProxy {
-    fn send_event(&self, event: Event) {
-        let _ = self.0.send(event);
+struct App {
+    proxy: EventLoopProxy<TermEvent>,
+    state: Option<State>,
+    modifiers: Modifiers,
+}
+
+impl App {
+    fn window_size(renderer: &renderer::Renderer, width: u32, height: u32) -> WindowSize {
+        let (cols, lines) = renderer.grid_size(width, height);
+        WindowSize {
+            num_cols: cols as u16,
+            num_lines: lines as u16,
+            cell_width: renderer.cell_width as u16,
+            cell_height: renderer.cell_height as u16,
+        }
     }
 }
 
-/// 그리드 크기 (임시 고정값 — 렌더러가 생기면 창 크기에서 계산).
-struct TermSize {
-    columns: usize,
-    lines: usize,
+impl ApplicationHandler<TermEvent> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_some() {
+            return;
+        }
+        let attrs = Window::default_attributes()
+            .with_title("terminal")
+            .with_inner_size(LogicalSize::new(960.0, 640.0));
+        let window = Arc::new(event_loop.create_window(attrs).expect("창 생성 실패"));
+
+        let renderer = renderer::Renderer::new(Arc::clone(&window));
+        let size = window.inner_size();
+        let ws = Self::window_size(&renderer, size.width, size.height);
+        let session = session::Session::new(session::EventProxy::new(self.proxy.clone()), ws);
+
+        self.state = Some(State {
+            window,
+            renderer,
+            session,
+        });
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: TermEvent) {
+        let Some(state) = &mut self.state else {
+            return;
+        };
+        match event {
+            TermEvent::Wakeup => state.window.request_redraw(),
+            // 터미널이 앱의 질의(커서 위치 등)에 응답할 때 — 반드시 PTY로 되돌려준다.
+            TermEvent::PtyWrite(text) => state.session.write(text.into_bytes()),
+            TermEvent::Title(title) => state.window.set_title(&title),
+            TermEvent::Exit => event_loop.exit(),
+            _ => {}
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(state) = &mut self.state else {
+            return;
+        };
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            WindowEvent::Resized(size) => {
+                state.renderer.resize(size.width, size.height);
+                let ws = Self::window_size(&state.renderer, size.width, size.height);
+                state.session.resize(ws);
+                state.window.request_redraw();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    if let Some(bytes) = key_to_bytes(&event, self.modifiers.state()) {
+                        state.session.write(bytes);
+                    }
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                state.renderer.draw(&state.session.term);
+            }
+            _ => {}
+        }
+    }
 }
 
-impl Dimensions for TermSize {
-    fn total_lines(&self) -> usize {
-        self.lines
+/// 키 입력을 PTY로 보낼 바이트 시퀀스로 변환한다.
+fn key_to_bytes(event: &KeyEvent, mods: ModifiersState) -> Option<Vec<u8>> {
+    // Cmd 조합은 앱 단축키 영역으로 남겨둔다.
+    if mods.super_key() {
+        return None;
     }
 
-    fn screen_lines(&self) -> usize {
-        self.lines
+    if let Key::Named(named) = &event.logical_key {
+        let seq: Option<&[u8]> = match named {
+            NamedKey::Enter => Some(b"\r"),
+            NamedKey::Backspace => Some(b"\x7f"),
+            NamedKey::Tab => Some(b"\t"),
+            NamedKey::Escape => Some(b"\x1b"),
+            NamedKey::ArrowUp => Some(b"\x1b[A"),
+            NamedKey::ArrowDown => Some(b"\x1b[B"),
+            NamedKey::ArrowRight => Some(b"\x1b[C"),
+            NamedKey::ArrowLeft => Some(b"\x1b[D"),
+            NamedKey::Home => Some(b"\x1b[H"),
+            NamedKey::End => Some(b"\x1b[F"),
+            NamedKey::PageUp => Some(b"\x1b[5~"),
+            NamedKey::PageDown => Some(b"\x1b[6~"),
+            NamedKey::Delete => Some(b"\x1b[3~"),
+            NamedKey::Space => {
+                if mods.control_key() {
+                    return Some(vec![0]);
+                }
+                Some(b" ")
+            }
+            _ => None,
+        };
+        if let Some(seq) = seq {
+            return Some(seq.to_vec());
+        }
     }
 
-    fn columns(&self) -> usize {
-        self.columns
+    // Ctrl+A..Z → C0 제어 문자
+    if mods.control_key() {
+        if let Key::Character(s) = &event.logical_key {
+            let c = s.chars().next()?.to_ascii_lowercase();
+            if c.is_ascii_lowercase() {
+                return Some(vec![c as u8 - b'a' + 1]);
+            }
+        }
     }
+
+    event
+        .text
+        .as_ref()
+        .filter(|t| !t.is_empty())
+        .map(|t| t.as_bytes().to_vec())
 }
 
 fn main() {
-    let (event_tx, event_rx) = mpsc::channel();
-    let proxy = EventProxy(event_tx);
-
-    let size = TermSize { columns: 80, lines: 24 };
-    let term = Term::new(Config::default(), &size, proxy.clone());
-    let term = Arc::new(FairMutex::new(term));
-
-    let window_size = WindowSize {
-        num_cols: 80,
-        num_lines: 24,
-        cell_width: 8,
-        cell_height: 16,
-    };
-    let pty = tty::new(&tty::Options::default(), window_size, 0)
-        .expect("PTY 생성 실패");
-
-    let event_loop = EventLoop::new(Arc::clone(&term), proxy, pty, false, false)
+    let event_loop = EventLoop::<TermEvent>::with_user_event()
+        .build()
         .expect("이벤트 루프 생성 실패");
-    let notifier = Notifier(event_loop.channel());
-    let _io_thread = event_loop.spawn();
-
-    // 셸에 명령을 흘려보낸다.
-    let input: Cow<'static, [u8]> = Cow::Owned(b"echo phase0-$((6*7))\r".to_vec());
-    notifier.0.send(Msg::Input(input)).expect("PTY 입력 실패");
-
-    // 셸이 출력할 시간을 준다 (임시 — 이후엔 Wakeup 이벤트 기반으로 전환).
-    std::thread::sleep(Duration::from_millis(1500));
-
-    // 그리드 내용을 덤프한다.
-    let term = term.lock();
-    let grid = term.grid();
-    println!("--- grid dump ({}x{}) ---", grid.columns(), grid.screen_lines());
-    let mut check = String::new();
-    let mut line = String::new();
-    let mut current_row = 0;
-    for indexed in grid.display_iter() {
-        if indexed.point.line.0 as usize != current_row {
-            let trimmed = line.trim_end();
-            if !trimmed.is_empty() {
-                println!("{trimmed}");
-            }
-            check.push('\n');
-            line.clear();
-            current_row = indexed.point.line.0 as usize;
-        }
-        line.push(indexed.c);
-        check.push(indexed.c);
-    }
-    let trimmed = line.trim_end();
-    if !trimmed.is_empty() {
-        println!("{trimmed}");
-    }
-    println!("--- end ---");
-
-    // 검증: 명령의 실행 결과가 그리드에 존재해야 한다.
-    let found = check.contains("phase0-42");
-    drop(term);
-
-    // 남은 이벤트는 버린다 (Phase 1에서 Wakeup 기반 렌더 루프로 대체).
-    while event_rx.try_recv().is_ok() {}
-
-    let _ = notifier.0.send(Msg::Shutdown);
-
-    if found {
-        println!("OK: 셸 → PTY → 파서 → 그리드 파이프라인 동작 확인");
-    } else {
-        eprintln!("FAIL: 그리드에서 명령 출력을 찾지 못함");
-        std::process::exit(1);
-    }
+    let proxy = event_loop.create_proxy();
+    let mut app = App {
+        proxy,
+        state: None,
+        modifiers: Modifiers::default(),
+    };
+    event_loop.run_app(&mut app).expect("이벤트 루프 실행 실패");
 }
