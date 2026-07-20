@@ -102,9 +102,16 @@
   - `config.example` 제공 (전부 주석, 복사해서 사용)
   - 커맨드 팔레트(Cmd+Shift+P): 10개 액션 목록 + 부분일치 필터 + 화살표/Enter 실행
   - 검증: 초록 테마+폰트20 반영 확인 / 팔레트에서 "split" 필터→Enter→페인 분할 확인
-  - **미루는 것**: Quake 모드(전역 핫키 — macOS 이벤트 탭 필요, 검증 어려움), brew cask 배포(GitHub 릴리스+.app 번들+공증 필요)
+- [x] Phase 9b — Quake 모드 + 배포 패키징
+  - Quake 드롭다운: `global-hotkey`로 Ctrl+` 전역 핫키 등록, OS 콜백을 winit으로 포워딩, 토글 시 화면 상단 배치+포커스
+  - 검증: Finder에서 Ctrl+` → 터미널 숨김 → 다시 Ctrl+` → 상단 드롭다운+포커스 확인
+  - 패키징: `scripts/bundle.sh`(.app 번들+Info.plist), `scripts/make-icon.sh`(아이콘), `Casks/terminal-dev.rb`(Homebrew Cask), README/LICENSE(MIT)
+  - 검증: `.app` 번들 실행 → "terminal-dev" 타이틀, 데몬 스폰, 렌더링 정상
+  - 남은 것: 코드 서명·공증(Apple Developer 자격증명 필요)
 
-미뤄둔 프로토콜(Phase 8): Kitty keyboard(CSI-u 인코더), Kitty graphics(GPU 이미지)
+미뤄둔 프로토콜 — 안전한 테스트 하네스가 없으면 검증 불가라 보류:
+- Kitty keyboard(CSI-u 인코더): 완전 구현 + Neovim 등 실제 클라이언트 테스트 필요 (반쪽 인코더는 앱 입력을 깨뜨림)
+- Kitty graphics(GPU 이미지): APC 파싱 + 이미지 디코드 + 별도 텍스처 아틀라스/배치 서브시스템 필요
 
 각 Phase는 "직접 실행해서 확인 가능한 상태"로 끝나야 다음으로 넘어간다.
 
