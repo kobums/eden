@@ -12,7 +12,16 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use bytemuck::{Pod, Zeroable};
 use winit::window::Window;
 
+use crate::layout::Rect;
 use crate::session::{Block, EventProxy};
+
+/// 한 페인을 그리는 데 필요한 정보.
+pub struct PaneView<'a> {
+    pub term: &'a FairMutex<Term<EventProxy>>,
+    pub blocks: &'a [Block],
+    pub rect: Rect,
+    pub focused: bool,
+}
 
 /// 창 가장자리 여백 (물리 픽셀, 스케일 적용 전).
 const PADDING: f32 = 8.0;
@@ -392,11 +401,6 @@ impl Renderer {
         (self.cell_height * 1.5).ceil()
     }
 
-    /// 그리드 콘텐츠가 시작되는 y 좌표.
-    pub fn content_origin_y(&self) -> f32 {
-        self.tab_bar_height() + PADDING
-    }
-
     /// 탭 바 좌표의 클릭이 몇 번째 탭인지 계산한다.
     pub fn tab_hit(&self, x: f64, y: f64, tab_count: usize) -> Option<usize> {
         if y >= self.tab_bar_height() as f64 || tab_count == 0 {
@@ -407,11 +411,10 @@ impl Renderer {
         (index < tab_count).then_some(index)
     }
 
-    /// 현재 창 크기에서 그리드 크기(열, 행)를 계산한다.
-    pub fn grid_size(&self, width: u32, height: u32) -> (usize, usize) {
-        let cols = ((width as f32 - PADDING * 2.0) / self.cell_width).floor() as usize;
-        let content_height = height as f32 - self.tab_bar_height() - PADDING * 2.0;
-        let lines = (content_height / self.cell_height).floor() as usize;
+    /// 페인 사각형에서 그리드 크기(열, 행)를 계산한다.
+    pub fn pane_grid_size(&self, rect: Rect) -> (usize, usize) {
+        let cols = ((rect.w - PADDING * 2.0) / self.cell_width).floor() as usize;
+        let lines = ((rect.h - PADDING * 2.0) / self.cell_height).floor() as usize;
         (cols.max(2), lines.max(1))
     }
 
@@ -497,22 +500,58 @@ impl Renderer {
         glyph
     }
 
-    /// 그리드를 그린다. IME 후보창 배치를 위해 커서의 물리 좌표(좌하단)를 돌려준다.
+    /// 모든 페인과 탭 바를 그린다.
+    /// IME 후보창 배치를 위해 포커스된 페인의 커서 물리 좌표(좌하단)를 돌려준다.
     pub fn draw(
         &mut self,
-        term: &FairMutex<Term<EventProxy>>,
+        panes: &[PaneView],
         preedit: Option<&str>,
-        blocks: &[Block],
         tab_titles: &[String],
         active_tab: usize,
     ) -> Option<(f64, f64)> {
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
         let mut ime_pos = None;
-        let origin_y = self.content_origin_y();
+
+        for pane in panes {
+            let pane_ime = self.draw_pane(
+                pane,
+                if pane.focused { preedit } else { None },
+                &mut bg_instances,
+                &mut text_instances,
+            );
+            if pane.focused {
+                ime_pos = pane_ime;
+            }
+        }
+
+        self.draw_tab_bar(tab_titles, active_tab, &mut bg_instances, &mut text_instances);
+        self.submit(&bg_instances, &text_instances);
+        ime_pos
+    }
+
+    /// 페인 하나를 인스턴스 버퍼에 그린다. 포커스된 페인이면 커서 좌표를 돌려준다.
+    fn draw_pane(
+        &mut self,
+        view: &PaneView,
+        preedit: Option<&str>,
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) -> Option<(f64, f64)> {
+        let rect = view.rect;
+        let origin_x = rect.x + PADDING;
+        let origin_y = rect.y + PADDING;
+        let blocks = view.blocks;
+        let mut ime_pos = None;
+
+        // 페인 배경 (구분선은 페인 사이 틈으로 드러난다)
+        bg_instances.push(BgInstance {
+            rect: [rect.x, rect.y, rect.w, rect.h],
+            color: [DEFAULT_BG[0], DEFAULT_BG[1], DEFAULT_BG[2], 1.0],
+        });
 
         {
-            let term = term.lock();
+            let term = view.term.lock();
             let content = term.renderable_content();
             // 스크롤백을 위로 올렸을 때: 그리드 좌표(line)는 화면 좌표(row)와
             // display_offset만큼 어긋난다.
@@ -523,7 +562,7 @@ impl Renderer {
             let cursor_row = cursor_point.line.0 + display_offset;
             let visible_lines = Dimensions::screen_lines(term.grid()) as i32;
             let cursor_visible = cursor_row >= 0 && cursor_row < visible_lines;
-            let cursor_x = PADDING + cursor_point.column.0 as f32 * self.cell_width;
+            let cursor_x = origin_x + cursor_point.column.0 as f32 * self.cell_width;
             let cursor_y = origin_y + cursor_row as f32 * self.cell_height;
             if cursor_visible {
                 ime_pos = Some((cursor_x as f64, (cursor_y + self.cell_height) as f64));
@@ -552,7 +591,7 @@ impl Renderer {
                 };
                 bg_instances.push(BgInstance {
                     rect: [
-                        1.0,
+                        rect.x + 1.0,
                         origin_y + top_row as f32 * self.cell_height,
                         PADDING - 2.0,
                         (bottom_row - top_row + 1) as f32 * self.cell_height,
@@ -567,7 +606,7 @@ impl Renderer {
                     continue;
                 }
                 let col = indexed.point.column.0;
-                let x = PADDING + col as f32 * self.cell_width;
+                let x = origin_x + col as f32 * self.cell_width;
                 let y = origin_y + row as f32 * self.cell_height;
 
                 let flags = indexed.flags;
@@ -588,8 +627,10 @@ impl Renderer {
                     bg = SELECTION_BG;
                 }
 
-                let is_cursor =
-                    cursor_visible && preedit.is_none() && indexed.point == cursor_point;
+                let is_cursor = view.focused
+                    && cursor_visible
+                    && preedit.is_none()
+                    && indexed.point == cursor_point;
                 if is_cursor {
                     // 블록 커서: 배경을 전경색으로, 글자를 배경색으로 반전
                     bg = DEFAULT_FG;
@@ -653,7 +694,17 @@ impl Renderer {
             }
         }
 
-        // --- 탭 바 ---
+        ime_pos
+    }
+
+    /// 탭 바를 인스턴스 버퍼에 그린다.
+    fn draw_tab_bar(
+        &mut self,
+        tab_titles: &[String],
+        active_tab: usize,
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) {
         {
             let bar_h = self.tab_bar_height();
             let width = self.config.width as f32;
@@ -703,8 +754,10 @@ impl Renderer {
                 }
             }
         }
+    }
 
-        // --- 업로드 ---
+    /// 인스턴스를 업로드하고 프레임을 그린다.
+    fn submit(&mut self, bg_instances: &[BgInstance], text_instances: &[TextInstance]) {
         let globals = Globals {
             screen: [self.config.width as f32, self.config.height as f32, 0.0, 0.0],
         };
@@ -750,10 +803,10 @@ impl Renderer {
                 match self.surface.get_current_texture() {
                     CurrentSurfaceTexture::Success(frame)
                     | CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                    _ => return ime_pos,
+                    _ => return,
                 }
             }
-            _ => return ime_pos,
+            _ => return,
         };
         let view = frame
             .texture
@@ -768,10 +821,11 @@ impl Renderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
+                        // 페인 사이 틈이 구분선으로 보이도록 배경보다 어두운 색으로 클리어
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: DEFAULT_BG[0] as f64,
-                            g: DEFAULT_BG[1] as f64,
-                            b: DEFAULT_BG[2] as f64,
+                            r: TAB_BAR_BG[0] as f64,
+                            g: TAB_BAR_BG[1] as f64,
+                            b: TAB_BAR_BG[2] as f64,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -798,7 +852,6 @@ impl Renderer {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(frame);
-        ime_pos
     }
 }
 
