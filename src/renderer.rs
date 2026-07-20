@@ -25,15 +25,16 @@ pub struct PaneView<'a> {
 
 /// 창 가장자리 여백 (물리 픽셀, 스케일 적용 전).
 const PADDING: f32 = 8.0;
-/// 폰트 크기 (논리 픽셀).
-const FONT_SIZE: f32 = 14.0;
 const ATLAS_SIZE: u32 = 2048;
 
-/// 기본 배경/전경색.
-const DEFAULT_BG: [f32; 3] = [0.086, 0.086, 0.11];
-const DEFAULT_FG: [f32; 3] = [0.85, 0.85, 0.87];
-/// 선택 영역 배경색.
-const SELECTION_BG: [f32; 3] = [0.23, 0.33, 0.48];
+/// 설정에서 온 배경/전경/선택/커서 색.
+#[derive(Clone, Copy)]
+struct Theme {
+    bg: [f32; 3],
+    fg: [f32; 3],
+    selection: [f32; 3],
+    cursor: [f32; 3],
+}
 
 /// 블록 상태 바 색: 실행 중 / 성공 / 실패
 const BLOCK_RUNNING: [f32; 3] = [0.35, 0.55, 0.95];
@@ -121,15 +122,26 @@ pub struct Renderer {
     fonts: Vec<fontdue::Font>,
     font_px: f32,
     ascent: f32,
+    theme: Theme,
 
     pub cell_width: f32,
     pub cell_height: f32,
 }
 
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Self {
+    pub fn new(window: Arc<Window>, config: &crate::config::Config) -> Self {
         let scale = window.scale_factor() as f32;
         let size = window.inner_size();
+        let theme = Theme {
+            bg: config.background,
+            fg: config.foreground,
+            selection: config.selection,
+            cursor: config.cursor,
+        };
+        // 아래에서 wgpu의 SurfaceConfiguration도 `config`라는 지역 변수를 쓰므로,
+        // 앱 설정 값은 여기서 미리 꺼내 둔다.
+        let cfg_font_size = config.font_size;
+        let cfg_font_path = config.font_path.clone();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window).expect("surface 생성 실패");
@@ -165,24 +177,23 @@ impl Renderer {
         surface.configure(&device, &config);
 
         // --- 폰트 ---
-        let primary = FONT_CANDIDATES
-            .iter()
-            .find_map(|path| {
-                let bytes = std::fs::read(path).ok()?;
-                fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
-            })
+        // 설정의 font-path가 있으면 우선, 없으면 시스템 후보.
+        let load_font = |path: &str| -> Option<fontdue::Font> {
+            let bytes = std::fs::read(path).ok()?;
+            fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+        };
+        let primary = cfg_font_path
+            .as_deref()
+            .and_then(load_font)
+            .or_else(|| FONT_CANDIDATES.iter().find_map(|p| load_font(p)))
             .expect("고정폭 폰트를 찾지 못함");
         let mut fonts = vec![primary];
         for path in FALLBACK_FONTS {
-            if let Ok(bytes) = std::fs::read(path) {
-                if let Ok(font) =
-                    fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
-                {
-                    fonts.push(font);
-                }
+            if let Some(font) = load_font(path) {
+                fonts.push(font);
             }
         }
-        let font_px = FONT_SIZE * scale;
+        let font_px = cfg_font_size * scale;
         let line_metrics = fonts[0]
             .horizontal_line_metrics(font_px)
             .expect("폰트 라인 메트릭 없음");
@@ -394,6 +405,7 @@ impl Renderer {
             fonts,
             font_px,
             ascent,
+            theme,
             cell_width,
             cell_height,
         }
@@ -512,6 +524,7 @@ impl Renderer {
         tab_titles: &[String],
         active_tab: usize,
         ai_bar: Option<&str>,
+        palette: Option<(&str, &[String], usize)>,
     ) -> Option<(f64, f64)> {
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
@@ -533,8 +546,81 @@ impl Renderer {
         if let Some(line) = ai_bar {
             ime_pos = Some(self.draw_ai_bar(line, &mut bg_instances, &mut text_instances));
         }
+        if let Some((query, items, selected)) = palette {
+            self.draw_palette(query, items, selected, &mut bg_instances, &mut text_instances);
+        }
         self.submit(&bg_instances, &text_instances);
         ime_pos
+    }
+
+    /// 커맨드 팔레트 오버레이 (화면 중앙 상단). 쿼리 줄 + 필터된 액션 목록.
+    fn draw_palette(
+        &mut self,
+        query: &str,
+        items: &[String],
+        selected: usize,
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) {
+        let theme = self.theme;
+        let screen_w = self.config.width as f32;
+        let row_h = self.cell_height;
+        let rows = items.len().min(10);
+        let box_w = (screen_w * 0.6).min(720.0);
+        let box_x = (screen_w - box_w) / 2.0;
+        let box_y = self.tab_bar_height() + row_h;
+        let box_h = row_h * (rows as f32 + 1.5);
+
+        // 팔레트 배경
+        bg_instances.push(BgInstance {
+            rect: [box_x, box_y, box_w, box_h],
+            color: [0.12, 0.13, 0.18, 1.0],
+        });
+
+        let text_x = box_x + self.cell_width;
+        let draw_text = |s: &str, x: f32, y: f32, color: [f32; 3],
+                         renderer: &mut Self,
+                         out: &mut Vec<TextInstance>| {
+            let mut cx = x;
+            for ch in s.chars() {
+                use unicode_width::UnicodeWidthChar;
+                let adv = renderer.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
+                if cx + adv > box_x + box_w - renderer.cell_width {
+                    break;
+                }
+                if let Some(g) = renderer.glyph(ch) {
+                    out.push(TextInstance {
+                        rect: [cx + g.offset[0], y + g.offset[1], g.size[0], g.size[1]],
+                        uv: g.uv,
+                        color: [color[0], color[1], color[2], 1.0],
+                    });
+                }
+                cx += adv;
+            }
+        };
+
+        // 쿼리 줄
+        let query_y = box_y + row_h * 0.25;
+        draw_text(
+            &format!("> {query}_"),
+            text_x,
+            query_y,
+            theme.fg,
+            self,
+            text_instances,
+        );
+
+        // 액션 목록
+        for (i, item) in items.iter().take(rows).enumerate() {
+            let row_y = box_y + row_h * (i as f32 + 1.5);
+            if i == selected {
+                bg_instances.push(BgInstance {
+                    rect: [box_x, row_y, box_w, row_h],
+                    color: [theme.selection[0], theme.selection[1], theme.selection[2], 1.0],
+                });
+            }
+            draw_text(item, text_x, row_y, theme.fg, self, text_instances);
+        }
     }
 
     /// 화면 하단의 AI 입력 바. IME 후보창 배치를 위해 입력 끝 좌표를 돌려준다.
@@ -544,6 +630,7 @@ impl Renderer {
         bg_instances: &mut Vec<BgInstance>,
         text_instances: &mut Vec<TextInstance>,
     ) -> (f64, f64) {
+        let theme = self.theme;
         let bar_h = self.tab_bar_height();
         let width = self.config.width as f32;
         let y = self.config.height as f32 - bar_h;
@@ -569,7 +656,7 @@ impl Renderer {
                         glyph.size[1],
                     ],
                     uv: glyph.uv,
-                    color: [DEFAULT_FG[0], DEFAULT_FG[1], DEFAULT_FG[2], 1.0],
+                    color: [theme.fg[0], theme.fg[1], theme.fg[2], 1.0],
                 });
             }
             x += advance;
@@ -585,6 +672,7 @@ impl Renderer {
         bg_instances: &mut Vec<BgInstance>,
         text_instances: &mut Vec<TextInstance>,
     ) -> Option<(f64, f64)> {
+        let theme = self.theme;
         let rect = view.rect;
         let origin_x = rect.x + PADDING;
         let origin_y = rect.y + PADDING;
@@ -594,7 +682,7 @@ impl Renderer {
         // 페인 배경 (구분선은 페인 사이 틈으로 드러난다)
         bg_instances.push(BgInstance {
             rect: [rect.x, rect.y, rect.w, rect.h],
-            color: [DEFAULT_BG[0], DEFAULT_BG[1], DEFAULT_BG[2], 1.0],
+            color: [theme.bg[0], theme.bg[1], theme.bg[2], 1.0],
         });
 
         {
@@ -661,8 +749,8 @@ impl Renderer {
                     continue;
                 }
 
-                let mut fg = ansi_to_rgb(&indexed.fg, DEFAULT_FG);
-                let mut bg = ansi_to_rgb(&indexed.bg, DEFAULT_BG);
+                let mut fg = ansi_to_rgb(&indexed.fg, theme.fg, theme.bg, theme.fg);
+                let mut bg = ansi_to_rgb(&indexed.bg, theme.bg, theme.bg, theme.fg);
                 if flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -671,7 +759,7 @@ impl Renderer {
                     .as_ref()
                     .is_some_and(|range| range.contains(indexed.point));
                 if selected {
-                    bg = SELECTION_BG;
+                    bg = theme.selection;
                 }
 
                 let is_cursor = view.focused
@@ -679,13 +767,13 @@ impl Renderer {
                     && preedit.is_none()
                     && indexed.point == cursor_point;
                 if is_cursor {
-                    // 블록 커서: 배경을 전경색으로, 글자를 배경색으로 반전
-                    bg = DEFAULT_FG;
-                    fg = DEFAULT_BG;
+                    // 블록 커서: 배경을 커서색으로, 글자를 배경색으로 반전
+                    bg = theme.cursor;
+                    fg = theme.bg;
                 }
 
                 let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
-                if is_cursor || selected || bg != DEFAULT_BG {
+                if is_cursor || selected || bg != theme.bg {
                     bg_instances.push(BgInstance {
                         rect: [x, y, self.cell_width * width_cells, self.cell_height],
                         color: [bg[0], bg[1], bg[2], 1.0],
@@ -735,7 +823,7 @@ impl Renderer {
                     let w = self.cell_width * cells;
                     bg_instances.push(BgInstance {
                         rect: [x, cursor_y, w, self.cell_height],
-                        color: [DEFAULT_FG[0], DEFAULT_FG[1], DEFAULT_FG[2], 1.0],
+                        color: [theme.fg[0], theme.fg[1], theme.fg[2], 1.0],
                     });
                     if let Some(glyph) = self.glyph(ch) {
                         text_instances.push(TextInstance {
@@ -746,7 +834,7 @@ impl Renderer {
                                 glyph.size[1],
                             ],
                             uv: glyph.uv,
-                            color: [DEFAULT_BG[0], DEFAULT_BG[1], DEFAULT_BG[2], 1.0],
+                            color: [theme.bg[0], theme.bg[1], theme.bg[2], 1.0],
                         });
                     }
                     x += w;
@@ -766,6 +854,7 @@ impl Renderer {
         text_instances: &mut Vec<TextInstance>,
     ) {
         {
+            let theme = self.theme;
             let bar_h = self.tab_bar_height();
             let width = self.config.width as f32;
             bg_instances.push(BgInstance {
@@ -780,11 +869,11 @@ impl Renderer {
                 if i == active_tab {
                     bg_instances.push(BgInstance {
                         rect: [i as f32 * tab_width, 0.0, tab_width, bar_h],
-                        color: [DEFAULT_BG[0], DEFAULT_BG[1], DEFAULT_BG[2], 1.0],
+                        color: [theme.bg[0], theme.bg[1], theme.bg[2], 1.0],
                     });
                 }
                 let fg = if i == active_tab {
-                    DEFAULT_FG
+                    theme.fg
                 } else {
                     TAB_INACTIVE_FG
                 };
@@ -916,19 +1005,20 @@ impl Renderer {
 }
 
 /// ANSI 색 → RGB. 16색 팔레트와 256색 확장을 지원한다.
-fn ansi_to_rgb(color: &AnsiColor, default: [f32; 3]) -> [f32; 3] {
+/// `bg`/`fg`는 설정 테마의 기본 배경/전경으로, Named(Background/Foreground)에 쓰인다.
+fn ansi_to_rgb(color: &AnsiColor, default: [f32; 3], bg: [f32; 3], fg: [f32; 3]) -> [f32; 3] {
     match color {
         AnsiColor::Spec(rgb) => [
             rgb.r as f32 / 255.0,
             rgb.g as f32 / 255.0,
             rgb.b as f32 / 255.0,
         ],
-        AnsiColor::Named(named) => named_color(*named, default),
-        AnsiColor::Indexed(idx) => indexed_color(*idx, default),
+        AnsiColor::Named(named) => named_color(*named, default, bg, fg),
+        AnsiColor::Indexed(idx) => indexed_color(*idx, default, bg, fg),
     }
 }
 
-fn named_color(named: NamedColor, default: [f32; 3]) -> [f32; 3] {
+fn named_color(named: NamedColor, default: [f32; 3], bg: [f32; 3], fg: [f32; 3]) -> [f32; 3] {
     match named {
         NamedColor::Black | NamedColor::DimBlack => rgb8(0x2e, 0x2e, 0x3e),
         NamedColor::Red | NamedColor::DimRed => rgb8(0xf3, 0x8b, 0xa8),
@@ -946,13 +1036,13 @@ fn named_color(named: NamedColor, default: [f32; 3]) -> [f32; 3] {
         NamedColor::BrightMagenta => rgb8(0xcb, 0xa6, 0xf7),
         NamedColor::BrightCyan => rgb8(0x94, 0xe2, 0xd5),
         NamedColor::BrightWhite => rgb8(0xff, 0xff, 0xff),
-        NamedColor::Background => DEFAULT_BG,
-        NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::Cursor => DEFAULT_FG,
+        NamedColor::Background => bg,
+        NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::Cursor => fg,
         _ => default,
     }
 }
 
-fn indexed_color(idx: u8, default: [f32; 3]) -> [f32; 3] {
+fn indexed_color(idx: u8, default: [f32; 3], bg: [f32; 3], fg: [f32; 3]) -> [f32; 3] {
     match idx {
         0..=7 => named_color(
             match idx {
@@ -966,6 +1056,8 @@ fn indexed_color(idx: u8, default: [f32; 3]) -> [f32; 3] {
                 _ => NamedColor::White,
             },
             default,
+            bg,
+            fg,
         ),
         8..=15 => named_color(
             match idx {
@@ -979,6 +1071,8 @@ fn indexed_color(idx: u8, default: [f32; 3]) -> [f32; 3] {
                 _ => NamedColor::BrightWhite,
             },
             default,
+            bg,
+            fg,
         ),
         16..=231 => {
             let i = idx as u32 - 16;

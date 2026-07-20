@@ -105,17 +105,22 @@ pub struct Session {
 
 impl Session {
     /// mux 데몬에 새 세션을 만들어 붙는다.
-    pub fn new(proxy: EventProxy, window_size: WindowSize) -> Self {
+    pub fn new(proxy: EventProxy, window_size: WindowSize, scrollback: usize) -> Self {
         let _ = mux::ensure_daemon();
         let (client, read_stream) =
             MuxClient::create(window_size).expect("mux 세션 생성 실패");
-        Self::build(proxy, window_size, client, read_stream)
+        Self::build(proxy, window_size, scrollback, client, read_stream)
     }
 
     /// 데몬의 기존 세션에 다시 붙는다 (detach 후 복원).
-    pub fn attach(proxy: EventProxy, id: u64, window_size: WindowSize) -> Option<Self> {
+    pub fn attach(
+        proxy: EventProxy,
+        id: u64,
+        window_size: WindowSize,
+        scrollback: usize,
+    ) -> Option<Self> {
         let (client, read_stream) = MuxClient::attach(id, window_size).ok()?;
-        Some(Self::build(proxy, window_size, client, read_stream))
+        Some(Self::build(proxy, window_size, scrollback, client, read_stream))
     }
 
     /// 현재 살아있는 세션 ID 목록.
@@ -132,6 +137,7 @@ impl Session {
     fn build(
         proxy: EventProxy,
         window_size: WindowSize,
+        scrollback: usize,
         client: MuxClient,
         read_stream: std::os::unix::net::UnixStream,
     ) -> Self {
@@ -140,7 +146,7 @@ impl Session {
             lines: window_size.num_lines as usize,
         };
         let config = Config {
-            scrolling_history: 10_000,
+            scrolling_history: scrollback,
             ..Config::default()
         };
         let term = Term::new(config, &size, proxy.clone());
