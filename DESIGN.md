@@ -95,7 +95,16 @@
   - **미루는 것(반쪽 구현이 오히려 해로움)**:
     - Kitty keyboard protocol — 완전한 CSI-u 인코더 필요 (advertise만 하고 인코딩 틀리면 Neovim 등 입력 깨짐)
     - Kitty graphics protocol — APC 파싱 + GPU 이미지 서브시스템(별도 아틀라스) 필요
-- [ ] Phase 9 — 프로덕트화: 설정(key=value), 테마, Quake 모드, 커맨드 팔레트, 배포(brew cask)
+- [~] Phase 9 — 프로덕트화: 설정 파일 + 테마 + 커맨드 팔레트 (부분 완료)
+  - `config.rs`: `~/.config/terminal-dev/config` (Ghostty식 key=value), 없으면 기본값
+  - 설정 항목: font-size, font-path, scrollback, background/foreground/cursor/selection(#rrggbb)
+  - 렌더러를 Theme 기반으로 리팩터 (bg/fg/선택/커서 색 + 폰트 설정 반영), 세션은 scrollback 반영
+  - `config.example` 제공 (전부 주석, 복사해서 사용)
+  - 커맨드 팔레트(Cmd+Shift+P): 10개 액션 목록 + 부분일치 필터 + 화살표/Enter 실행
+  - 검증: 초록 테마+폰트20 반영 확인 / 팔레트에서 "split" 필터→Enter→페인 분할 확인
+  - **미루는 것**: Quake 모드(전역 핫키 — macOS 이벤트 탭 필요, 검증 어려움), brew cask 배포(GitHub 릴리스+.app 번들+공증 필요)
+
+미뤄둔 프로토콜(Phase 8): Kitty keyboard(CSI-u 인코더), Kitty graphics(GPU 이미지)
 
 각 Phase는 "직접 실행해서 확인 가능한 상태"로 끝나야 다음으로 넘어간다.
 
