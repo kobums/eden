@@ -5,6 +5,7 @@
 
 mod ai;
 mod layout;
+mod mux;
 mod renderer;
 mod session;
 
@@ -160,6 +161,37 @@ impl App {
         state.window.request_redraw();
     }
 
+    /// 데몬의 기존 세션 ID에 붙어 새 탭으로 복원한다.
+    fn attach_tab(&mut self, session_id: u64) {
+        let Some(state) = &self.state else { return };
+        let rect = state.content_rect();
+        let id = self.next_pane_id;
+        let (cols, lines) = state.renderer.pane_grid_size(rect);
+        let ws = WindowSize {
+            num_cols: cols as u16,
+            num_lines: lines as u16,
+            cell_width: state.renderer.cell_width as u16,
+            cell_height: state.renderer.cell_height as u16,
+        };
+        let Some(session) =
+            session::Session::attach(session::EventProxy::new(self.proxy.clone(), id), session_id, ws)
+        else {
+            return; // 세션이 이미 사라졌으면 건너뛴다
+        };
+        self.next_pane_id += 1;
+        let pane = Pane {
+            id,
+            session,
+            title: "zsh".to_string(),
+        };
+        let state = self.state.as_mut().unwrap();
+        state.tabs.push(Tab {
+            root: PaneNode::Leaf(pane),
+            focused: id,
+        });
+        state.window.request_redraw();
+    }
+
     /// 포커스된 페인을 분할한다.
     fn split_pane(&mut self, dir: SplitDir) {
         let Some(state) = &self.state else { return };
@@ -179,7 +211,9 @@ impl App {
     }
 
     /// 페인을 닫는다. 탭의 마지막 페인이면 탭을 닫고, 마지막 탭이면 종료한다.
-    fn close_pane(&mut self, pane_id: usize, event_loop: &ActiveEventLoop) {
+    /// `kill`이 true면 데몬 세션(셸)도 종료한다 (Cmd+W). false면 로컬 정리만
+    /// (셸이 이미 exit한 경우 — TermEvent::Exit).
+    fn close_pane(&mut self, pane_id: usize, kill: bool, event_loop: &ActiveEventLoop) {
         let Some(state) = &mut self.state else { return };
         let Some(tab_index) = state
             .tabs
@@ -188,6 +222,13 @@ impl App {
         else {
             return;
         };
+
+        // 명시적 닫기: 데몬 세션 종료 (다음 실행에서 복원되지 않도록)
+        if kill {
+            if let Some(pane) = state.tabs[tab_index].root.pane(pane_id) {
+                pane.session.kill();
+            }
+        }
 
         let is_last_pane = state.tabs[tab_index].root.panes().len() == 1;
         if is_last_pane {
@@ -571,7 +612,24 @@ impl ApplicationHandler<AppEvent> for App {
             tabs: Vec::new(),
             active: 0,
         });
-        self.new_tab();
+
+        // 데몬을 확인하고, 살아있는 세션이 있으면 탭으로 복원한다 (detach 후 attach).
+        let _ = mux::ensure_daemon();
+        let surviving = session::Session::list();
+        if surviving.is_empty() {
+            self.new_tab();
+        } else {
+            for id in surviving {
+                self.attach_tab(id);
+            }
+            let empty = self.state.as_ref().unwrap().tabs.is_empty();
+            if empty {
+                // 모든 세션이 attach 직전에 사라졌으면 새로 만든다
+                self.new_tab();
+            } else {
+                self.state.as_mut().unwrap().active = 0;
+            }
+        }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
@@ -659,7 +717,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             // 셸 종료 → 해당 페인 닫기
-            TermEvent::Exit => self.close_pane(pane_id, event_loop),
+            TermEvent::Exit => self.close_pane(pane_id, false, event_loop),
             _ => {}
         }
     }
@@ -744,7 +802,7 @@ impl ApplicationHandler<AppEvent> for App {
                         Key::Character("t") => self.new_tab(),
                         Key::Character("w") => {
                             let focused = self.state.as_ref().unwrap().active_tab().focused;
-                            self.close_pane(focused, event_loop);
+                            self.close_pane(focused, true, event_loop);
                         }
                         Key::Character(digit)
                             if digit.len() == 1
@@ -1017,6 +1075,11 @@ fn key_to_bytes(event: &KeyEvent, mods: ModifiersState) -> Option<Vec<u8>> {
 }
 
 fn main() {
+    // `--daemon`: mux 데몬으로 실행 (세션/PTY 소유, GUI와 독립적으로 생존)
+    if std::env::args().any(|a| a == "--daemon") {
+        mux::run_daemon();
+    }
+
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .expect("이벤트 루프 생성 실패");

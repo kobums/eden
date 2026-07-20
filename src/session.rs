@@ -4,20 +4,16 @@
 //! PTY 바이트 스트림에서 OSC 133(셸 통합 마크)을 파서에 넣기 전에 가로채
 //! 블록/프롬프트 경계를 기록하기 위해서다.
 
-use std::fs::File;
-use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
-use alacritty_terminal::event::{Event, EventListener, OnResize, WindowSize};
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::Processor;
 use winit::event_loop::EventLoopProxy;
+
+use crate::mux::{self, MuxClient, MuxMsg};
 
 /// 앱 이벤트: 터미널 이벤트(페인 ID 태깅) 또는 AI 생성 결과.
 pub enum AppEvent {
@@ -104,12 +100,41 @@ pub struct Block {
 pub struct Session {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     pub marks: Marks,
-    writer_tx: Sender<Vec<u8>>,
-    pty: Arc<Mutex<tty::Pty>>,
+    client: Arc<MuxClient>,
 }
 
 impl Session {
+    /// mux 데몬에 새 세션을 만들어 붙는다.
     pub fn new(proxy: EventProxy, window_size: WindowSize) -> Self {
+        let _ = mux::ensure_daemon();
+        let (client, read_stream) =
+            MuxClient::create(window_size).expect("mux 세션 생성 실패");
+        Self::build(proxy, window_size, client, read_stream)
+    }
+
+    /// 데몬의 기존 세션에 다시 붙는다 (detach 후 복원).
+    pub fn attach(proxy: EventProxy, id: u64, window_size: WindowSize) -> Option<Self> {
+        let (client, read_stream) = MuxClient::attach(id, window_size).ok()?;
+        Some(Self::build(proxy, window_size, client, read_stream))
+    }
+
+    /// 현재 살아있는 세션 ID 목록.
+    pub fn list() -> Vec<u64> {
+        MuxClient::list().unwrap_or_default()
+    }
+
+    /// 데몬 세션의 ID.
+    #[allow(dead_code)] // 향후 레이아웃 저장/복원에 사용
+    pub fn id(&self) -> u64 {
+        self.client.id()
+    }
+
+    fn build(
+        proxy: EventProxy,
+        window_size: WindowSize,
+        client: MuxClient,
+        read_stream: std::os::unix::net::UnixStream,
+    ) -> Self {
         let size = TermSize {
             columns: window_size.num_cols as usize,
             lines: window_size.num_lines as usize,
@@ -120,64 +145,18 @@ impl Session {
         };
         let term = Term::new(config, &size, proxy.clone());
         let term = Arc::new(FairMutex::new(term));
-
-        let mut options = tty::Options::default();
-        options
-            .env
-            .insert("TERM".to_string(), "xterm-256color".to_string());
-        // zsh 셸 통합(OSC 133) 주입: ZDOTDIR을 우리 부트스트랩 디렉터리로 지정
-        if let Some(shell_dir) = install_shell_integration() {
-            if let Ok(orig) = std::env::var("ZDOTDIR") {
-                options
-                    .env
-                    .insert("TERMDEV_ORIG_ZDOTDIR".to_string(), orig);
-            }
-            options.env.insert(
-                "TERMDEV_INTEGRATION".to_string(),
-                shell_dir.join("integration.zsh").display().to_string(),
-            );
-            options
-                .env
-                .insert("ZDOTDIR".to_string(), shell_dir.display().to_string());
-        }
-        let pty = tty::new(&options, window_size, 0).expect("PTY 생성 실패");
-
-        // tty::new는 master fd를 논블로킹으로 만든다. 우리는 블로킹 스레드 IO를
-        // 쓰므로 되돌린다 (dup된 fd끼리 파일 상태 플래그를 공유한다).
-        let master_fd = pty.file().as_raw_fd();
-        unsafe {
-            let flags = libc::fcntl(master_fd, libc::F_GETFL, 0);
-            libc::fcntl(master_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
-        }
-
-        let read_file = pty.file().try_clone().expect("PTY fd 복제 실패");
-        let write_file = pty.file().try_clone().expect("PTY fd 복제 실패");
-        let pty = Arc::new(Mutex::new(pty));
         let marks: Marks = Arc::new(Mutex::new(Vec::new()));
 
-        // 쓰기 스레드: 채널로 받은 바이트를 PTY에 쓴다.
-        let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>();
-        std::thread::Builder::new()
-            .name("pty-writer".into())
-            .spawn(move || {
-                let mut file = write_file;
-                while let Ok(bytes) = writer_rx.recv() {
-                    if file.write_all(&bytes).is_err() {
-                        break;
-                    }
-                }
-            })
-            .expect("쓰기 스레드 생성 실패");
-
-        // 읽기 스레드: PTY 출력을 OSC 133 스캐너를 거쳐 파서에 공급한다.
+        // 읽기 스레드: 데몬이 보내는 출력(리플레이 + 라이브)을
+        // OSC 133 스캐너를 거쳐 파서에 공급한다.
         {
             let term = Arc::clone(&term);
             let marks = Arc::clone(&marks);
             let proxy = proxy.clone();
             std::thread::Builder::new()
-                .name("pty-reader".into())
+                .name("mux-reader".into())
                 .spawn(move || {
-                    reader_loop(read_file, term, marks, proxy);
+                    reader_loop(read_stream, term, marks, proxy);
                 })
                 .expect("읽기 스레드 생성 실패");
         }
@@ -185,19 +164,23 @@ impl Session {
         Self {
             term,
             marks,
-            writer_tx,
-            pty,
+            client: Arc::new(client),
         }
     }
 
-    /// 키 입력 등을 PTY로 보낸다.
+    /// 키 입력 등을 데몬 세션(PTY)으로 보낸다.
     pub fn write(&self, bytes: Vec<u8>) {
-        let _ = self.writer_tx.send(bytes);
+        self.client.write(&bytes);
     }
 
-    /// 창 크기 변경을 그리드와 PTY 양쪽에 반영한다.
+    /// 세션을 완전히 종료한다 (셸 kill).
+    pub fn kill(&self) {
+        self.client.kill();
+    }
+
+    /// 창 크기 변경을 그리드와 데몬 PTY 양쪽에 반영한다.
     pub fn resize(&self, window_size: WindowSize) {
-        self.pty.lock().unwrap().on_resize(window_size);
+        self.client.resize(window_size);
         self.term.lock().resize(TermSize {
             columns: window_size.num_cols as usize,
             lines: window_size.num_lines as usize,
@@ -280,46 +263,31 @@ impl Session {
     }
 }
 
-/// 셸 통합 스크립트를 캐시 디렉터리에 설치하고 그 경로를 돌려준다.
-fn install_shell_integration() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let dir = PathBuf::from(home).join(".cache/terminal-dev/shell");
-    std::fs::create_dir_all(&dir).ok()?;
-    std::fs::write(dir.join(".zshenv"), include_str!("../shell/zshenv")).ok()?;
-    std::fs::write(
-        dir.join("integration.zsh"),
-        include_str!("../shell/integration.zsh"),
-    )
-    .ok()?;
-    Some(dir)
-}
-
-// --- PTY 읽기 루프 + OSC 133 스캐너 ---
+// --- mux 읽기 루프 + OSC 133 스캐너 ---
 
 const OSC133_PREFIX: &[u8] = b"\x1b]133;";
 
 fn reader_loop(
-    mut file: File,
+    mut stream: std::os::unix::net::UnixStream,
     term: Arc<FairMutex<Term<EventProxy>>>,
     marks: Marks,
     proxy: EventProxy,
 ) {
     let mut parser = Processor::new();
     let mut scanner = Osc133Scanner::default();
-    let mut buf = [0u8; 65536];
 
     loop {
-        match file.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
+        match mux::read_msg(&mut stream) {
+            Ok(MuxMsg::Output(data)) => {
                 {
                     let mut term = term.lock();
-                    scanner.process(&mut term, &mut parser, &marks, &buf[..n]);
+                    scanner.process(&mut term, &mut parser, &marks, &data);
                 }
                 proxy.send_event(Event::Wakeup);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            // 셸 종료 시 EIO
+            // 셸 종료
+            Ok(MuxMsg::Exit) => break,
+            // 소켓 종료(데몬 죽음 등)
             Err(_) => break,
         }
     }
