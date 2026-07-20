@@ -235,6 +235,17 @@ impl ApplicationHandler<TermEvent> for App {
                     match event.logical_key.as_ref() {
                         Key::Character("c") => self.copy_selection(),
                         Key::Character("v") => self.paste(),
+                        // OSC 133 마크 기반 프롬프트 점프
+                        Key::Named(NamedKey::ArrowUp) => {
+                            let state = self.state.as_ref().unwrap();
+                            state.session.jump_to_prompt(-1);
+                            state.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            let state = self.state.as_ref().unwrap();
+                            state.session.jump_to_prompt(1);
+                            state.window.request_redraw();
+                        }
                         _ => {}
                     }
                     return;
