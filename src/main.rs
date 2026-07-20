@@ -1,7 +1,7 @@
-//! Phase 2: 쓸 수 있는 터미널.
+//! Phase 5: 탭 (내장 멀티플렉서 1단계).
 //!
-//! Phase 1(창 + 렌더링 + 키 입력) 위에 스크롤백, 마우스 선택/클립보드,
-//! 한글 IME(preedit 오버레이), 타이핑 시 자동 하단 스크롤을 얹는다.
+//! 탭마다 독립된 세션(PTY + 그리드 + 블록)을 가지며,
+//! Cmd+T/W/1-9/Shift+[] 로 탭을 만들고 오가고 닫는다.
 
 mod renderer;
 mod session;
@@ -22,22 +22,49 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
+use session::TabEvent;
+
 /// 더블/트리플 클릭 판정 간격.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// 휠 한 칸당 스크롤 줄 수.
 const SCROLL_LINES_PER_TICK: f32 = 3.0;
 
+struct Tab {
+    id: usize,
+    session: session::Session,
+    title: String,
+}
+
 struct State {
     window: Arc<Window>,
     renderer: renderer::Renderer,
-    session: session::Session,
+    tabs: Vec<Tab>,
+    active: usize,
+}
+
+impl State {
+    fn active_tab(&self) -> &Tab {
+        &self.tabs[self.active]
+    }
+
+    fn window_size(&self) -> WindowSize {
+        let size = self.window.inner_size();
+        let (cols, lines) = self.renderer.grid_size(size.width, size.height);
+        WindowSize {
+            num_cols: cols as u16,
+            num_lines: lines as u16,
+            cell_width: self.renderer.cell_width as u16,
+            cell_height: self.renderer.cell_height as u16,
+        }
+    }
 }
 
 struct App {
-    proxy: EventLoopProxy<TermEvent>,
+    proxy: EventLoopProxy<TabEvent>,
     state: Option<State>,
     modifiers: Modifiers,
     clipboard: Option<arboard::Clipboard>,
+    next_tab_id: usize,
 
     // 마우스 상태
     mouse_pos: PhysicalPosition<f64>,
@@ -47,18 +74,52 @@ struct App {
     click_count: u32,
     scroll_accum: f32,
 
-    // IME 조합 중 문자열
+    // IME 조합 중 문자열 (활성 탭에 적용)
     preedit: Option<String>,
 }
 
 impl App {
-    fn window_size(renderer: &renderer::Renderer, width: u32, height: u32) -> WindowSize {
-        let (cols, lines) = renderer.grid_size(width, height);
-        WindowSize {
-            num_cols: cols as u16,
-            num_lines: lines as u16,
-            cell_width: renderer.cell_width as u16,
-            cell_height: renderer.cell_height as u16,
+    fn new_tab(&mut self) {
+        let Some(state) = &mut self.state else { return };
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let proxy = session::EventProxy::new(self.proxy.clone(), id);
+        let session = session::Session::new(proxy, state.window_size());
+        state.tabs.push(Tab {
+            id,
+            session,
+            title: "zsh".to_string(),
+        });
+        state.active = state.tabs.len() - 1;
+        self.preedit = None;
+        state.window.request_redraw();
+    }
+
+    fn close_tab(&mut self, index: usize, event_loop: &ActiveEventLoop) {
+        let Some(state) = &mut self.state else { return };
+        if index >= state.tabs.len() {
+            return;
+        }
+        state.tabs.remove(index);
+        if state.tabs.is_empty() {
+            event_loop.exit();
+            return;
+        }
+        if state.active >= state.tabs.len() {
+            state.active = state.tabs.len() - 1;
+        }
+        self.preedit = None;
+        state.window.request_redraw();
+    }
+
+    fn switch_tab(&mut self, index: usize) {
+        let Some(state) = &mut self.state else { return };
+        if index < state.tabs.len() && index != state.active {
+            state.active = index;
+            self.preedit = None;
+            let title = state.tabs[index].title.clone();
+            state.window.set_title(&title);
+            state.window.request_redraw();
         }
     }
 
@@ -66,20 +127,22 @@ impl App {
     fn grid_point(state: &State, pos: PhysicalPosition<f64>) -> (Point, Side) {
         let cell_w = state.renderer.cell_width as f64;
         let cell_h = state.renderer.cell_height as f64;
-        let pad = 8.0;
+        let pad_x = 8.0;
+        let origin_y = state.renderer.content_origin_y() as f64;
 
-        let term = state.session.term.lock();
+        let tab = state.active_tab();
+        let term = tab.session.term.lock();
         let grid = term.grid();
         let cols = grid.columns();
         let lines = grid.screen_lines();
         let display_offset = grid.display_offset();
         drop(term);
 
-        let col = (((pos.x - pad) / cell_w).floor().max(0.0) as usize).min(cols - 1);
-        let line = (((pos.y - pad) / cell_h).floor().max(0.0) as usize).min(lines - 1);
+        let col = (((pos.x - pad_x) / cell_w).floor().max(0.0) as usize).min(cols - 1);
+        let line = (((pos.y - origin_y) / cell_h).floor().max(0.0) as usize).min(lines - 1);
         let point = viewport_to_point(display_offset, Point::new(line, Column(col)));
 
-        let in_cell_x = (pos.x - pad) - col as f64 * cell_w;
+        let in_cell_x = (pos.x - pad_x) - col as f64 * cell_w;
         let side = if in_cell_x < cell_w / 2.0 {
             Side::Left
         } else {
@@ -90,7 +153,7 @@ impl App {
 
     fn copy_selection(&mut self) {
         let Some(state) = &self.state else { return };
-        let text = state.session.term.lock().selection_to_string();
+        let text = state.active_tab().session.term.lock().selection_to_string();
         if let (Some(text), Some(clipboard)) = (text, self.clipboard.as_mut()) {
             if !text.is_empty() {
                 let _ = clipboard.set_text(text);
@@ -106,7 +169,8 @@ impl App {
         let Ok(text) = clipboard.get_text() else {
             return;
         };
-        let bracketed = state
+        let tab = state.active_tab();
+        let bracketed = tab
             .session
             .term
             .lock()
@@ -116,21 +180,22 @@ impl App {
             let mut bytes = b"\x1b[200~".to_vec();
             bytes.extend_from_slice(text.as_bytes());
             bytes.extend_from_slice(b"\x1b[201~");
-            state.session.write(bytes);
+            tab.session.write(bytes);
         } else {
             // 개행이 실행으로 이어지는 사고를 줄이기 위해 \n → \r 정규화
-            state.session.write(text.replace('\n', "\r").into_bytes());
+            tab.session.write(text.replace('\n', "\r").into_bytes());
         }
     }
 
     /// 마지막으로 완료된 명령의 출력을 클립보드로 복사한다 (Cmd+Shift+C).
     fn copy_last_output(&mut self) {
         let Some(state) = &self.state else { return };
-        let Some((start_abs, end_abs)) = state.session.last_output_range() else {
+        let tab = state.active_tab();
+        let Some((start_abs, end_abs)) = tab.session.last_output_range() else {
             return;
         };
         let text = {
-            let term = state.session.term.lock();
+            let term = tab.session.term.lock();
             let history = term.grid().history_size() as i64;
             let cols = term.grid().columns();
             let start = Point::new(Line((start_abs - history) as i32), Column(0));
@@ -148,9 +213,10 @@ impl App {
     fn select_block_at(&mut self, pos: PhysicalPosition<f64>) {
         let Some(state) = &self.state else { return };
         let (point, _) = Self::grid_point(state, pos);
-        let blocks = state.session.blocks();
+        let tab = state.active_tab();
+        let blocks = tab.session.blocks();
 
-        let mut term = state.session.term.lock();
+        let mut term = tab.session.term.lock();
         let history = term.grid().history_size() as i64;
         let cols = term.grid().columns();
         let cursor_abs = history + term.grid().cursor.point.line.0 as i64;
@@ -177,18 +243,26 @@ impl App {
     }
 
     /// 입력이 발생하면 선택을 해제하고 화면을 맨 아래로 되돌린다.
-    fn on_user_input(state: &State) {
-        let mut term = state.session.term.lock();
+    fn on_user_input(tab: &Tab) {
+        let mut term = tab.session.term.lock();
         term.selection = None;
         term.scroll_display(Scroll::Bottom);
     }
 
     fn redraw(&mut self) {
         let Some(state) = &mut self.state else { return };
-        let blocks = state.session.blocks();
-        let ime_pos = state
-            .renderer
-            .draw(&state.session.term, self.preedit.as_deref(), &blocks);
+        let tab = &state.tabs[state.active];
+        let blocks = tab.session.blocks();
+        let titles: Vec<String> = state.tabs.iter().map(|t| t.title.clone()).collect();
+        let active = state.active;
+        let tab = &state.tabs[active];
+        let ime_pos = state.renderer.draw(
+            &tab.session.term,
+            self.preedit.as_deref(),
+            &blocks,
+            &titles,
+            active,
+        );
         // IME 후보창을 커서 바로 아래에 배치
         if let Some((x, y)) = ime_pos {
             state.window.set_ime_cursor_area(
@@ -202,7 +276,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<TermEvent> for App {
+impl ApplicationHandler<TabEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -214,27 +288,38 @@ impl ApplicationHandler<TermEvent> for App {
         window.set_ime_allowed(true);
 
         let renderer = renderer::Renderer::new(Arc::clone(&window));
-        let size = window.inner_size();
-        let ws = Self::window_size(&renderer, size.width, size.height);
-        let session = session::Session::new(session::EventProxy::new(self.proxy.clone()), ws);
-
         self.clipboard = arboard::Clipboard::new().ok();
         self.state = Some(State {
             window,
             renderer,
-            session,
+            tabs: Vec::new(),
+            active: 0,
         });
+        self.new_tab();
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: TermEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, (tab_id, event): TabEvent) {
         let Some(state) = &mut self.state else {
             return;
         };
+        let Some(index) = state.tabs.iter().position(|t| t.id == tab_id) else {
+            return;
+        };
         match event {
-            TermEvent::Wakeup => state.window.request_redraw(),
+            TermEvent::Wakeup => {
+                if index == state.active {
+                    state.window.request_redraw();
+                }
+            }
             // 터미널이 앱의 질의(커서 위치 등)에 응답할 때 — 반드시 PTY로 되돌려준다.
-            TermEvent::PtyWrite(text) => state.session.write(text.into_bytes()),
-            TermEvent::Title(title) => state.window.set_title(&title),
+            TermEvent::PtyWrite(text) => state.tabs[index].session.write(text.into_bytes()),
+            TermEvent::Title(title) => {
+                state.tabs[index].title = title.clone();
+                if index == state.active {
+                    state.window.set_title(&title);
+                }
+                state.window.request_redraw();
+            }
             // OSC 52: 앱이 클립보드에 쓰기를 요청
             TermEvent::ClipboardStore(_, text) => {
                 if let Some(clipboard) = self.clipboard.as_mut() {
@@ -248,9 +333,10 @@ impl ApplicationHandler<TermEvent> for App {
                     .as_mut()
                     .and_then(|c| c.get_text().ok())
                     .unwrap_or_default();
-                state.session.write(formatter(&text).into_bytes());
+                state.tabs[index].session.write(formatter(&text).into_bytes());
             }
-            TermEvent::Exit => event_loop.exit(),
+            // 셸 종료 → 해당 탭 닫기
+            TermEvent::Exit => self.close_tab(index, event_loop),
             _ => {}
         }
     }
@@ -270,8 +356,10 @@ impl ApplicationHandler<TermEvent> for App {
             WindowEvent::Resized(size) => {
                 let state = self.state.as_mut().unwrap();
                 state.renderer.resize(size.width, size.height);
-                let ws = Self::window_size(&state.renderer, size.width, size.height);
-                state.session.resize(ws);
+                let ws = state.window_size();
+                for tab in &state.tabs {
+                    tab.session.resize(ws);
+                }
                 state.window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -287,7 +375,32 @@ impl ApplicationHandler<TermEvent> for App {
                 // 앱 단축키 (Cmd 조합)
                 if mods.super_key() {
                     match event.logical_key.as_ref() {
-                        // Cmd+Shift+C: 마지막 명령 출력 복사
+                        // 탭
+                        Key::Character("t") => self.new_tab(),
+                        Key::Character("w") => {
+                            let active = self.state.as_ref().unwrap().active;
+                            self.close_tab(active, event_loop);
+                        }
+                        Key::Character(digit)
+                            if digit.len() == 1
+                                && digit.chars().next().unwrap().is_ascii_digit() =>
+                        {
+                            let n = digit.chars().next().unwrap() as usize - '0' as usize;
+                            if n >= 1 {
+                                self.switch_tab(n - 1);
+                            }
+                        }
+                        Key::Character("}") => {
+                            let state = self.state.as_ref().unwrap();
+                            let next = (state.active + 1) % state.tabs.len();
+                            self.switch_tab(next);
+                        }
+                        Key::Character("{") => {
+                            let state = self.state.as_ref().unwrap();
+                            let prev = (state.active + state.tabs.len() - 1) % state.tabs.len();
+                            self.switch_tab(prev);
+                        }
+                        // 복사/붙여넣기
                         Key::Character("c") if mods.shift_key() => self.copy_last_output(),
                         Key::Character("C") => self.copy_last_output(),
                         Key::Character("c") => self.copy_selection(),
@@ -295,12 +408,12 @@ impl ApplicationHandler<TermEvent> for App {
                         // OSC 133 마크 기반 프롬프트 점프
                         Key::Named(NamedKey::ArrowUp) => {
                             let state = self.state.as_ref().unwrap();
-                            state.session.jump_to_prompt(-1);
+                            state.active_tab().session.jump_to_prompt(-1);
                             state.window.request_redraw();
                         }
                         Key::Named(NamedKey::ArrowDown) => {
                             let state = self.state.as_ref().unwrap();
-                            state.session.jump_to_prompt(1);
+                            state.active_tab().session.jump_to_prompt(1);
                             state.window.request_redraw();
                         }
                         _ => {}
@@ -310,8 +423,9 @@ impl ApplicationHandler<TermEvent> for App {
 
                 if let Some(bytes) = key_to_bytes(&event, mods) {
                     let state = self.state.as_ref().unwrap();
-                    Self::on_user_input(state);
-                    state.session.write(bytes);
+                    let tab = state.active_tab();
+                    Self::on_user_input(tab);
+                    tab.session.write(bytes);
                     state.window.request_redraw();
                 }
             }
@@ -323,8 +437,9 @@ impl ApplicationHandler<TermEvent> for App {
                     }
                     Ime::Commit(text) => {
                         self.preedit = None;
-                        Self::on_user_input(state);
-                        state.session.write(text.into_bytes());
+                        let tab = state.active_tab();
+                        Self::on_user_input(tab);
+                        tab.session.write(text.into_bytes());
                     }
                     Ime::Enabled | Ime::Disabled => {}
                 }
@@ -335,7 +450,7 @@ impl ApplicationHandler<TermEvent> for App {
                 if self.left_button_down {
                     let state = self.state.as_ref().unwrap();
                     let (point, side) = Self::grid_point(state, position);
-                    let mut term = state.session.term.lock();
+                    let mut term = state.active_tab().session.term.lock();
                     if let Some(selection) = term.selection.as_mut() {
                         selection.update(point, side);
                     }
@@ -346,6 +461,19 @@ impl ApplicationHandler<TermEvent> for App {
             WindowEvent::MouseInput { state: button_state, button, .. } => {
                 if button != MouseButton::Left {
                     return;
+                }
+                // 탭 바 클릭 → 탭 전환
+                if button_state == ElementState::Pressed {
+                    let state = self.state.as_ref().unwrap();
+                    let hit = state.renderer.tab_hit(
+                        self.mouse_pos.x,
+                        self.mouse_pos.y,
+                        state.tabs.len(),
+                    );
+                    if let Some(index) = hit {
+                        self.switch_tab(index);
+                        return;
+                    }
                 }
                 // Cmd+클릭: 블록 전체 선택
                 if button_state == ElementState::Pressed && self.modifiers.state().super_key() {
@@ -374,7 +502,7 @@ impl ApplicationHandler<TermEvent> for App {
                             2 => SelectionType::Semantic,
                             _ => SelectionType::Lines,
                         };
-                        let mut term = state.session.term.lock();
+                        let mut term = state.active_tab().session.term.lock();
                         term.selection = Some(Selection::new(ty, point, side));
                         drop(term);
                         state.window.request_redraw();
@@ -382,7 +510,7 @@ impl ApplicationHandler<TermEvent> for App {
                     ElementState::Released => {
                         self.left_button_down = false;
                         // 빈 선택(클릭만)은 해제
-                        let mut term = state.session.term.lock();
+                        let mut term = state.active_tab().session.term.lock();
                         let empty = term.selection.as_ref().is_some_and(|s| s.is_empty());
                         if empty && self.click_count == 1 {
                             term.selection = None;
@@ -410,7 +538,8 @@ impl ApplicationHandler<TermEvent> for App {
                     return;
                 }
 
-                let mut term = state.session.term.lock();
+                let tab = state.active_tab();
+                let mut term = tab.session.term.lock();
                 if term.mode().contains(TermMode::ALT_SCREEN) {
                     // 대체 스크린(less, vim 등)에는 히스토리가 없으므로 화살표로 변환
                     drop(term);
@@ -419,7 +548,7 @@ impl ApplicationHandler<TermEvent> for App {
                     for _ in 0..lines.abs() as usize {
                         bytes.extend_from_slice(seq);
                     }
-                    state.session.write(bytes);
+                    tab.session.write(bytes);
                 } else {
                     term.scroll_display(Scroll::Delta(lines as i32));
                     drop(term);
@@ -482,7 +611,7 @@ fn key_to_bytes(event: &KeyEvent, mods: ModifiersState) -> Option<Vec<u8>> {
 }
 
 fn main() {
-    let event_loop = EventLoop::<TermEvent>::with_user_event()
+    let event_loop = EventLoop::<TabEvent>::with_user_event()
         .build()
         .expect("이벤트 루프 생성 실패");
     let proxy = event_loop.create_proxy();
@@ -491,6 +620,7 @@ fn main() {
         state: None,
         modifiers: Modifiers::default(),
         clipboard: None,
+        next_tab_id: 0,
         mouse_pos: PhysicalPosition::new(0.0, 0.0),
         left_button_down: false,
         last_click_at: None,

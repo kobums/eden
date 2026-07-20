@@ -31,6 +31,10 @@ const BLOCK_RUNNING: [f32; 3] = [0.35, 0.55, 0.95];
 const BLOCK_OK: [f32; 3] = [0.35, 0.72, 0.46];
 const BLOCK_FAIL: [f32; 3] = [0.92, 0.42, 0.46];
 
+/// 탭 바 색.
+const TAB_BAR_BG: [f32; 3] = [0.055, 0.055, 0.075];
+const TAB_INACTIVE_FG: [f32; 3] = [0.5, 0.5, 0.55];
+
 /// macOS 시스템 고정폭 폰트 후보 (앞에서부터 시도, 첫 성공이 주 폰트).
 const FONT_CANDIDATES: &[&str] = &[
     "/System/Library/Fonts/Menlo.ttc",
@@ -383,10 +387,31 @@ impl Renderer {
         }
     }
 
+    /// 탭 바 높이 (물리 픽셀).
+    pub fn tab_bar_height(&self) -> f32 {
+        (self.cell_height * 1.5).ceil()
+    }
+
+    /// 그리드 콘텐츠가 시작되는 y 좌표.
+    pub fn content_origin_y(&self) -> f32 {
+        self.tab_bar_height() + PADDING
+    }
+
+    /// 탭 바 좌표의 클릭이 몇 번째 탭인지 계산한다.
+    pub fn tab_hit(&self, x: f64, y: f64, tab_count: usize) -> Option<usize> {
+        if y >= self.tab_bar_height() as f64 || tab_count == 0 {
+            return None;
+        }
+        let tab_width = self.config.width as f64 / tab_count as f64;
+        let index = (x / tab_width) as usize;
+        (index < tab_count).then_some(index)
+    }
+
     /// 현재 창 크기에서 그리드 크기(열, 행)를 계산한다.
     pub fn grid_size(&self, width: u32, height: u32) -> (usize, usize) {
         let cols = ((width as f32 - PADDING * 2.0) / self.cell_width).floor() as usize;
-        let lines = ((height as f32 - PADDING * 2.0) / self.cell_height).floor() as usize;
+        let content_height = height as f32 - self.tab_bar_height() - PADDING * 2.0;
+        let lines = (content_height / self.cell_height).floor() as usize;
         (cols.max(2), lines.max(1))
     }
 
@@ -478,10 +503,13 @@ impl Renderer {
         term: &FairMutex<Term<EventProxy>>,
         preedit: Option<&str>,
         blocks: &[Block],
+        tab_titles: &[String],
+        active_tab: usize,
     ) -> Option<(f64, f64)> {
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
         let mut ime_pos = None;
+        let origin_y = self.content_origin_y();
 
         {
             let term = term.lock();
@@ -496,7 +524,7 @@ impl Renderer {
             let visible_lines = Dimensions::screen_lines(term.grid()) as i32;
             let cursor_visible = cursor_row >= 0 && cursor_row < visible_lines;
             let cursor_x = PADDING + cursor_point.column.0 as f32 * self.cell_width;
-            let cursor_y = PADDING + cursor_row as f32 * self.cell_height;
+            let cursor_y = origin_y + cursor_row as f32 * self.cell_height;
             if cursor_visible {
                 ime_pos = Some((cursor_x as f64, (cursor_y + self.cell_height) as f64));
             }
@@ -525,7 +553,7 @@ impl Renderer {
                 bg_instances.push(BgInstance {
                     rect: [
                         1.0,
-                        PADDING + top_row as f32 * self.cell_height,
+                        origin_y + top_row as f32 * self.cell_height,
                         PADDING - 2.0,
                         (bottom_row - top_row + 1) as f32 * self.cell_height,
                     ],
@@ -540,7 +568,7 @@ impl Renderer {
                 }
                 let col = indexed.point.column.0;
                 let x = PADDING + col as f32 * self.cell_width;
-                let y = PADDING + row as f32 * self.cell_height;
+                let y = origin_y + row as f32 * self.cell_height;
 
                 let flags = indexed.flags;
                 if flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -621,6 +649,57 @@ impl Renderer {
                         });
                     }
                     x += w;
+                }
+            }
+        }
+
+        // --- 탭 바 ---
+        {
+            let bar_h = self.tab_bar_height();
+            let width = self.config.width as f32;
+            bg_instances.push(BgInstance {
+                rect: [0.0, 0.0, width, bar_h],
+                color: [TAB_BAR_BG[0], TAB_BAR_BG[1], TAB_BAR_BG[2], 1.0],
+            });
+
+            let tab_count = tab_titles.len().max(1);
+            let tab_width = width / tab_count as f32;
+            let label_y = (bar_h - self.cell_height) / 2.0;
+            for (i, title) in tab_titles.iter().enumerate() {
+                if i == active_tab {
+                    bg_instances.push(BgInstance {
+                        rect: [i as f32 * tab_width, 0.0, tab_width, bar_h],
+                        color: [DEFAULT_BG[0], DEFAULT_BG[1], DEFAULT_BG[2], 1.0],
+                    });
+                }
+                let fg = if i == active_tab {
+                    DEFAULT_FG
+                } else {
+                    TAB_INACTIVE_FG
+                };
+                let label = format!("{} {}", i + 1, title);
+                let mut x = i as f32 * tab_width + self.cell_width;
+                let x_limit = (i + 1) as f32 * tab_width - self.cell_width;
+                for ch in label.chars() {
+                    use unicode_width::UnicodeWidthChar;
+                    let advance =
+                        self.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
+                    if x + advance > x_limit {
+                        break;
+                    }
+                    if let Some(glyph) = self.glyph(ch) {
+                        text_instances.push(TextInstance {
+                            rect: [
+                                x + glyph.offset[0],
+                                label_y + glyph.offset[1],
+                                glyph.size[0],
+                                glyph.size[1],
+                            ],
+                            uv: glyph.uv,
+                            color: [fg[0], fg[1], fg[2], 1.0],
+                        });
+                    }
+                    x += advance;
                 }
             }
         }
