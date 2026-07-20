@@ -88,7 +88,13 @@
   - GUI 닫기 = detach(데몬 생존), 재실행 = 살아있는 세션을 탭으로 자동 복원, Cmd+W = 세션 종료
   - 검증: `echo PERSIST_MARKER_42` → GUI 종료 → 데몬 생존 확인 → 재실행 시 화면+블록바 복원 + 재입력 동작 확인
   - 남은 것: detach 시 리플레이 상한 초과분 스크롤백 손실(현재 화면은 보존), 원격 mux(SSH), 분할 레이아웃 복원(현재는 세션당 탭 1개로 복원)
-- [ ] Phase 8 — 프로토콜 완성: Kitty keyboard/graphics, mode 2026 synchronized output, OSC 8, OSC 52
+- [~] Phase 8 — 프로토콜: OSC 8 하이퍼링크 + synchronized output (부분 완료)
+  - OSC 8 하이퍼링크: 링크 셀에 밑줄 렌더링, Cmd+클릭으로 URL 열기(`open`) — 검증됨
+  - synchronized output(mode 2026): 리더 루프가 진입/종료 시퀀스를 감시해 sync 중 redraw 억제, 종료 시 원자적 프레임 — 배선됨
+  - OSC 52 클립보드는 Phase 2에서 이미 완료
+  - **미루는 것(반쪽 구현이 오히려 해로움)**:
+    - Kitty keyboard protocol — 완전한 CSI-u 인코더 필요 (advertise만 하고 인코딩 틀리면 Neovim 등 입력 깨짐)
+    - Kitty graphics protocol — APC 파싱 + GPU 이미지 서브시스템(별도 아틀라스) 필요
 - [ ] Phase 9 — 프로덕트화: 설정(key=value), 테마, Quake 모드, 커맨드 팔레트, 배포(brew cask)
 
 각 Phase는 "직접 실행해서 확인 가능한 상태"로 끝나야 다음으로 넘어간다.
