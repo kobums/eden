@@ -80,7 +80,14 @@
   - **안전 원칙: 생성된 명령은 입력줄에 삽입만 하고 실행하지 않음** (실행은 항상 사용자 몫)
   - 검증: Cmd+K → "show disk usage" → `ls -la /tmp` 프롬프트 삽입(미실행) 확인
   - 남은 것: 스트리밍 응답, 에러 설명 모드, 명령 미리보기/수정 UI, ant 프로필 인증
-- [ ] Phase 7 — 세션 지속성: detach/attach, 재시작 후 복원 (차별화 ②-b)
+- [x] Phase 7 — 세션 지속성: detach/attach, 재시작 후 복원 (차별화 ②-b)
+  - `mux.rs`: 셸/PTY를 소유하는 별도 데몬 프로세스 (`terminal --daemon`, setsid로 독립)
+  - 데몬은 세션별 출력을 리플레이 버퍼(최대 2MB)에 축적 + 붙은 클라이언트에 실시간 전달
+  - 클라이언트(GUI)는 Unix 소켓으로 attach → 리플레이 재생으로 화면/스크롤백/실행 상태 복원
+  - **Term은 GUI에 그대로 유지** → 선택/스크롤/블록/AI/한글 등 기존 기능 전부 무수정 보존
+  - GUI 닫기 = detach(데몬 생존), 재실행 = 살아있는 세션을 탭으로 자동 복원, Cmd+W = 세션 종료
+  - 검증: `echo PERSIST_MARKER_42` → GUI 종료 → 데몬 생존 확인 → 재실행 시 화면+블록바 복원 + 재입력 동작 확인
+  - 남은 것: detach 시 리플레이 상한 초과분 스크롤백 손실(현재 화면은 보존), 원격 mux(SSH), 분할 레이아웃 복원(현재는 세션당 탭 1개로 복원)
 - [ ] Phase 8 — 프로토콜 완성: Kitty keyboard/graphics, mode 2026 synchronized output, OSC 8, OSC 52
 - [ ] Phase 9 — 프로덕트화: 설정(key=value), 테마, Quake 모드, 커맨드 팔레트, 배포(brew cask)
 
