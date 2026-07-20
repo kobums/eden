@@ -15,7 +15,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::mux::{self, MuxClient, MuxMsg};
 
-/// 앱 이벤트: 터미널 이벤트(페인 ID 태깅) 또는 AI 생성 결과.
+/// 앱 이벤트: 터미널 이벤트(페인 ID 태깅), AI 생성 결과, 또는 Quake 전역 핫키.
 pub enum AppEvent {
     Term(usize, Event),
     AiResult {
@@ -23,6 +23,8 @@ pub enum AppEvent {
         seq: u64,
         result: Result<String, String>,
     },
+    /// Quake 드롭다운 토글 (전역 핫키)
+    QuakeToggle,
 }
 
 /// 터미널 이벤트를 (페인 ID와 함께) winit 이벤트 루프로 전달하는 리스너.

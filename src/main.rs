@@ -150,6 +150,10 @@ struct App {
     /// 취소된 요청의 늦은 응답을 무시하기 위한 시퀀스 번호
     ai_seq: u64,
     palette: Option<Palette>,
+    /// Quake 전역 핫키 매니저 (살아있어야 핫키가 유지됨)
+    _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
+    /// Quake 드롭다운으로 숨겨진 상태인지
+    quake_hidden: bool,
 
     // 마우스 상태
     mouse_pos: PhysicalPosition<f64>,
@@ -616,6 +620,57 @@ impl App {
         }
     }
 
+    /// Ctrl+` 전역 핫키를 등록하고, 이벤트를 winit 루프로 포워딩한다.
+    fn register_quake_hotkey(&mut self) {
+        use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+        use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+
+        let Ok(manager) = GlobalHotKeyManager::new() else {
+            return; // 핫키 등록 실패 시 Quake 없이 계속
+        };
+        let hotkey = HotKey::new(Some(Modifiers::CONTROL), Code::Backquote);
+        if manager.register(hotkey).is_err() {
+            return;
+        }
+        self._hotkey = Some(manager);
+
+        // OS 콜백이 채우는 채널을 블로킹으로 읽어 winit으로 포워딩한다.
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let receiver = GlobalHotKeyEvent::receiver();
+            while let Ok(event) = receiver.recv() {
+                if event.state == HotKeyState::Pressed
+                    && proxy.send_event(AppEvent::QuakeToggle).is_err()
+                {
+                    break; // 앱 종료
+                }
+            }
+        });
+    }
+
+    /// Quake 드롭다운 토글: 보이면 숨기고, 숨겨졌으면 화면 상단에 띄운다.
+    fn toggle_quake(&mut self) {
+        let Some(state) = &self.state else { return };
+        if self.quake_hidden {
+            // 현재 모니터 상단에 드롭다운 배치
+            if let Some(monitor) = state.window.current_monitor() {
+                let mpos = monitor.position();
+                let msize = monitor.size();
+                let win = state.window.inner_size();
+                let x = mpos.x + (msize.width as i32 - win.width as i32) / 2;
+                state
+                    .window
+                    .set_outer_position(PhysicalPosition::new(x.max(mpos.x), mpos.y));
+            }
+            state.window.set_visible(true);
+            state.window.focus_window();
+            self.quake_hidden = false;
+        } else {
+            state.window.set_visible(false);
+            self.quake_hidden = true;
+        }
+    }
+
     /// 입력이 발생하면 선택을 해제하고 화면을 맨 아래로 되돌린다.
     fn on_user_input(pane: &Pane) {
         let mut term = pane.session.term.lock();
@@ -768,10 +823,18 @@ impl ApplicationHandler<AppEvent> for App {
                 self.state.as_mut().unwrap().active = 0;
             }
         }
+
+        // Quake 드롭다운: Ctrl+` 전역 핫키를 등록한다.
+        self.register_quake_hotkey();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
         if self.state.is_none() {
+            return;
+        }
+        // Quake 전역 핫키: 드롭다운 토글
+        if let AppEvent::QuakeToggle = app_event {
+            self.toggle_quake();
             return;
         }
         // AI 생성 결과: 명령을 해당 페인의 입력줄에 삽입한다 (실행하지 않음)
@@ -1290,6 +1353,8 @@ fn main() {
         ai: AiState::Idle,
         ai_seq: 0,
         palette: None,
+        _hotkey: None,
+        quake_hidden: false,
         mouse_pos: PhysicalPosition::new(0.0, 0.0),
         left_button_down: false,
         last_click_at: None,
