@@ -3,8 +3,9 @@
 여러 터미널(iTerm2 · tmux · Alacritty · Kitty · WezTerm · Ghostty · Warp 등)을 조사해
 각각의 장점을 하나로 모은 macOS 네이티브 터미널. Rust + wgpu(Metal)로 구현.
 
-조사 보고서는 [RESEARCH.md](RESEARCH.md), 설계 결정과 단계별 로드맵은
-[DESIGN.md](DESIGN.md) 참고.
+문서는 [docs/](docs/) 폴더에 정리돼 있다 — 기능 가이드, 아키텍처, 설정,
+단축키, 개발, 그리고 조사 보고서([docs/research.md](docs/research.md))와
+설계·로드맵([docs/design.md](docs/design.md)).
 
 ## 특징
 
@@ -37,22 +38,18 @@ foreground = #d9d9de
 scrollback = 10000
 ```
 
-## 단축키
+## 단축키 (요약)
 
 | 키 | 동작 |
 |---|---|
 | Cmd+T / Cmd+W | 새 탭 / 탭(세션) 닫기 |
-| Cmd+1..9 | 탭 이동 |
-| Cmd+Shift+[ / ] | 이전 / 다음 탭 |
 | Cmd+D / Cmd+Shift+D | 좌우 / 상하 분할 |
-| Cmd+Option+화살표 | 페인 포커스 이동 |
 | Cmd+↑ / Cmd+↓ | 이전 / 다음 프롬프트로 점프 |
-| Cmd+C / Cmd+V | 복사 / 붙여넣기 |
-| Cmd+Shift+C | 마지막 명령 출력 복사 |
-| Cmd+클릭 | 하이퍼링크 열기 / 블록 선택 |
 | Cmd+K | AI 명령 생성 |
 | Cmd+Shift+P | 커맨드 팔레트 |
-| Ctrl+` | Quake 드롭다운 토글 (전역 핫키, 어느 앱에서든) |
+| Ctrl+` | Quake 드롭다운 토글 (전역 핫키) |
+
+전체 목록은 [docs/keybindings.md](docs/keybindings.md).
 
 ## AI 명령 생성
 

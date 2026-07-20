@@ -1,0 +1,99 @@
+# 개발
+
+## 빌드 · 실행
+
+```sh
+cargo build            # 디버그
+cargo build --release  # 릴리스
+./target/release/terminal
+```
+
+macOS 전용(Metal 렌더러, Cocoa 창, macOS 시스템 폰트/`open` 사용). Rust
+stable로 빌드된다.
+
+## 프로젝트 구조
+
+```
+src/
+  main.rs       winit 앱, 이벤트 루프, 탭/페인, 입력 라우팅, 팔레트/AI/Quake
+  renderer.rs   wgpu glyph atlas 렌더러
+  session.rs    페인 세션 (Term + OSC 133 + 블록 + mux 클라이언트)
+  mux.rs        mux 데몬 + 클라이언트 (세션 지속성)
+  layout.rs     페인 이진 분할 트리
+  config.rs     설정 파서
+  ai.rs         자연어 → 셸 명령
+  shader.wgsl   배경/글리프 셰이더
+shell/
+  integration.zsh   OSC 133 셸 통합
+  zshenv            ZDOTDIR 부트스트랩 주입
+scripts/
+  bundle.sh         .app 번들 생성
+  make-icon.sh      아이콘 생성
+Casks/
+  terminal-dev.rb   Homebrew Cask 템플릿
+docs/               이 문서들
+config.example      설정 예시
+```
+
+모듈별 책임은 [architecture.md](architecture.md) 참고.
+
+## mux 데몬 디버깅
+
+`terminal --daemon`은 세션/PTY를 소유하는 데몬으로 실행된다(보통 GUI가 자동
+스폰). 상태 확인/정리:
+
+```sh
+pgrep -fl "terminal --daemon"          # 데몬 실행 여부
+ls ~/.cache/terminal-dev/mux/*.sock    # 제어 소켓
+rm -f ~/.cache/terminal-dev/mux/control.sock   # 죽은 소켓 정리
+```
+
+OSC 133 마크 로그: `TERMDEV_DEBUG_MARKS=1 ./target/debug/terminal`
+
+## 패키징
+
+```sh
+./scripts/make-icon.sh    # dist/AppIcon.icns
+./scripts/bundle.sh       # dist/terminal-dev.app (릴리스 빌드 포함)
+open dist/terminal-dev.app
+```
+
+정식 배포에는 코드 서명 + 공증(notarization)이 필요하다(Apple Developer
+자격증명). Homebrew Cask는 GitHub 릴리스에 `.app.zip`을 올린 뒤
+[`Casks/terminal-dev.rb`](../Casks/terminal-dev.rb)의 `version`/`sha256`/`url`을
+채운다.
+
+## 구현 이력 (Phase 0~9)
+
+단계별로 만들고 매번 실제 실행/스크린샷으로 검증했다. 전체 로드맵과 각 단계의
+완료 내용·남은 한계는 [design.md](design.md)에 있다.
+
+| Phase | 내용 |
+|---|---|
+| 0 | PTY 셸 실행 + 그리드 검증 (headless) |
+| 1 | winit 창 + wgpu glyph atlas 렌더 + 키 입력 |
+| 2 | 스크롤백, 선택/클립보드, 한글 IME, 폰트 폴백 |
+| 3 | OSC 133 셸 통합 + 프롬프트 점프 |
+| 4 | 블록 UI (상태 바, 블록 복사) |
+| 5 | 탭 + 페인 분할 |
+| 6 | 로컬 우선 AI 명령 생성 |
+| 7 | 세션 지속성 (mux 데몬, detach/attach) |
+| 8 | OSC 8 하이퍼링크 + synchronized output |
+| 9 | 설정 파일 + 테마 + 커맨드 팔레트 + Quake + 배포 패키징 |
+
+## 남은 작업
+
+- **Kitty keyboard protocol** — 완전한 CSI-u 인코더 필요. 반쪽 구현은 프로토콜을
+  켜는 앱(Neovim 등)의 키 입력을 깨뜨리므로, 실제 클라이언트로 검증할 수 있을 때
+  구현.
+- **Kitty graphics protocol** — APC 파싱 + 이미지 디코드 + 별도 GPU 텍스처
+  아틀라스/배치 서브시스템 필요.
+- 코드 서명 · 공증.
+- 설정 확장 (16색 팔레트, 키바인딩 커스터마이즈 등).
+
+## 코드 스타일
+
+- 주석은 "왜"를 설명하고, "무엇"은 코드가 말하게 한다.
+- 각 기능은 직접 실행해 확인 가능한 상태로 만든 뒤 다음으로 넘어간다.
+- 표준(OSC 133 / OSC 8 / mode 2026)에 올라타고, 독자 규격은 남발하지 않는다.
+- 반쪽 구현(검증 불가)은 넣지 않는다.

@@ -1,6 +1,6 @@
 # 설계 문서
 
-> 조사 결과는 [RESEARCH.md](RESEARCH.md) 참고. 이 문서는 결정 사항과 아키텍처, 로드맵을 기록한다.
+> 조사 결과는 [research.md](research.md) 참고. 이 문서는 결정 사항과 아키텍처, 로드맵을 기록한다. 구현 구조는 [architecture.md](architecture.md).
 
 ## 확정된 결정 (2026-07-20)
 
