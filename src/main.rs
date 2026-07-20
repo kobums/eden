@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as TermEvent, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Point, Side};
+use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::viewport_to_point;
 use alacritty_terminal::term::TermMode;
@@ -123,6 +123,59 @@ impl App {
         }
     }
 
+    /// 마지막으로 완료된 명령의 출력을 클립보드로 복사한다 (Cmd+Shift+C).
+    fn copy_last_output(&mut self) {
+        let Some(state) = &self.state else { return };
+        let Some((start_abs, end_abs)) = state.session.last_output_range() else {
+            return;
+        };
+        let text = {
+            let term = state.session.term.lock();
+            let history = term.grid().history_size() as i64;
+            let cols = term.grid().columns();
+            let start = Point::new(Line((start_abs - history) as i32), Column(0));
+            let end = Point::new(Line((end_abs - history) as i32), Column(cols - 1));
+            term.bounds_to_string(start, end)
+        };
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            if !text.is_empty() {
+                let _ = clipboard.set_text(text);
+            }
+        }
+    }
+
+    /// 클릭한 위치가 속한 블록 전체를 선택한다 (Cmd+클릭).
+    fn select_block_at(&mut self, pos: PhysicalPosition<f64>) {
+        let Some(state) = &self.state else { return };
+        let (point, _) = Self::grid_point(state, pos);
+        let blocks = state.session.blocks();
+
+        let mut term = state.session.term.lock();
+        let history = term.grid().history_size() as i64;
+        let cols = term.grid().columns();
+        let cursor_abs = history + term.grid().cursor.point.line.0 as i64;
+        let clicked_abs = history + point.line.0 as i64;
+
+        for (i, block) in blocks.iter().enumerate() {
+            // 블록의 화면상 범위: 시작(A) ~ 다음 블록 시작 전 줄 (혹은 D-1 / 현재 커서)
+            let span_end = blocks
+                .get(i + 1)
+                .map(|next| next.start_abs - 1)
+                .unwrap_or(cursor_abs);
+            if block.start_abs <= clicked_abs && clicked_abs <= span_end {
+                let sel_end = block.end_abs.map(|d| d - 1).unwrap_or(span_end).max(block.start_abs);
+                let start = Point::new(Line((block.start_abs - history) as i32), Column(0));
+                let end = Point::new(Line((sel_end - history) as i32), Column(cols - 1));
+                let mut selection = Selection::new(SelectionType::Lines, start, Side::Left);
+                selection.update(end, Side::Right);
+                term.selection = Some(selection);
+                break;
+            }
+        }
+        drop(term);
+        state.window.request_redraw();
+    }
+
     /// 입력이 발생하면 선택을 해제하고 화면을 맨 아래로 되돌린다.
     fn on_user_input(state: &State) {
         let mut term = state.session.term.lock();
@@ -132,9 +185,10 @@ impl App {
 
     fn redraw(&mut self) {
         let Some(state) = &mut self.state else { return };
+        let blocks = state.session.blocks();
         let ime_pos = state
             .renderer
-            .draw(&state.session.term, self.preedit.as_deref());
+            .draw(&state.session.term, self.preedit.as_deref(), &blocks);
         // IME 후보창을 커서 바로 아래에 배치
         if let Some((x, y)) = ime_pos {
             state.window.set_ime_cursor_area(
@@ -233,6 +287,9 @@ impl ApplicationHandler<TermEvent> for App {
                 // 앱 단축키 (Cmd 조합)
                 if mods.super_key() {
                     match event.logical_key.as_ref() {
+                        // Cmd+Shift+C: 마지막 명령 출력 복사
+                        Key::Character("c") if mods.shift_key() => self.copy_last_output(),
+                        Key::Character("C") => self.copy_last_output(),
                         Key::Character("c") => self.copy_selection(),
                         Key::Character("v") => self.paste(),
                         // OSC 133 마크 기반 프롬프트 점프
@@ -288,6 +345,12 @@ impl ApplicationHandler<TermEvent> for App {
             }
             WindowEvent::MouseInput { state: button_state, button, .. } => {
                 if button != MouseButton::Left {
+                    return;
+                }
+                // Cmd+클릭: 블록 전체 선택
+                if button_state == ElementState::Pressed && self.modifiers.state().super_key() {
+                    self.select_block_at(self.mouse_pos);
+                    self.left_button_down = false;
                     return;
                 }
                 let state = self.state.as_ref().unwrap();

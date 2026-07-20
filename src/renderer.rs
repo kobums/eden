@@ -12,7 +12,7 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use bytemuck::{Pod, Zeroable};
 use winit::window::Window;
 
-use crate::session::EventProxy;
+use crate::session::{Block, EventProxy};
 
 /// 창 가장자리 여백 (물리 픽셀, 스케일 적용 전).
 const PADDING: f32 = 8.0;
@@ -25,6 +25,11 @@ const DEFAULT_BG: [f32; 3] = [0.086, 0.086, 0.11];
 const DEFAULT_FG: [f32; 3] = [0.85, 0.85, 0.87];
 /// 선택 영역 배경색.
 const SELECTION_BG: [f32; 3] = [0.23, 0.33, 0.48];
+
+/// 블록 상태 바 색: 실행 중 / 성공 / 실패
+const BLOCK_RUNNING: [f32; 3] = [0.35, 0.55, 0.95];
+const BLOCK_OK: [f32; 3] = [0.35, 0.72, 0.46];
+const BLOCK_FAIL: [f32; 3] = [0.92, 0.42, 0.46];
 
 /// macOS 시스템 고정폭 폰트 후보 (앞에서부터 시도, 첫 성공이 주 폰트).
 const FONT_CANDIDATES: &[&str] = &[
@@ -472,6 +477,7 @@ impl Renderer {
         &mut self,
         term: &FairMutex<Term<EventProxy>>,
         preedit: Option<&str>,
+        blocks: &[Block],
     ) -> Option<(f64, f64)> {
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
@@ -485,6 +491,7 @@ impl Renderer {
             let display_offset = content.display_offset as i32;
             let selection = content.selection;
             let cursor_point = content.cursor.point;
+            let history = term.grid().history_size() as i64;
             let cursor_row = cursor_point.line.0 + display_offset;
             let visible_lines = Dimensions::screen_lines(term.grid()) as i32;
             let cursor_visible = cursor_row >= 0 && cursor_row < visible_lines;
@@ -492,6 +499,38 @@ impl Renderer {
             let cursor_y = PADDING + cursor_row as f32 * self.cell_height;
             if cursor_visible {
                 ime_pos = Some((cursor_x as f64, (cursor_y + self.cell_height) as f64));
+            }
+
+            // --- 블록 상태 바 (왼쪽 거터) ---
+            // 화면 최상단의 절대 줄 번호. 블록의 절대 줄 → 화면 행 변환에 사용.
+            let top_abs = history - display_offset as i64;
+            let bottom_abs = history + cursor_point.line.0 as i64;
+            for block in blocks {
+                if block.cmd_abs.is_none() {
+                    continue; // 명령이 실행되지 않은 프롬프트는 표시하지 않음
+                }
+                let end_abs = block.end_abs.map(|d| d - 1).unwrap_or(bottom_abs);
+                let top_row = block.start_abs - top_abs;
+                let bottom_row = (end_abs - top_abs).min(visible_lines as i64 - 1);
+                if bottom_row < 0 || top_row >= visible_lines as i64 {
+                    continue;
+                }
+                let top_row = top_row.max(0);
+                let color = match (block.end_abs, block.exit) {
+                    (None, _) => BLOCK_RUNNING,
+                    (_, Some(0)) => BLOCK_OK,
+                    (_, Some(_)) => BLOCK_FAIL,
+                    _ => BLOCK_OK,
+                };
+                bg_instances.push(BgInstance {
+                    rect: [
+                        1.0,
+                        PADDING + top_row as f32 * self.cell_height,
+                        PADDING - 2.0,
+                        (bottom_row - top_row + 1) as f32 * self.cell_height,
+                    ],
+                    color: [color[0], color[1], color[2], 1.0],
+                });
             }
 
             for indexed in content.display_iter {
