@@ -81,8 +81,24 @@ tmux 없이 탭과 페인 분할을 쓴다.
 - **Cmd+C** 복사 / **Cmd+V** 붙여넣기 (bracketed paste 지원).
 - 터미널 앱의 OSC 52 클립보드 읽기/쓰기도 처리한다.
 
-## 설정 · 테마
+## 하단 상태바
 
-`~/.config/terminal-dev/config`에서 폰트·색·스크롤백을 바꾼다. 자세한 항목은
-[configuration.md](configuration.md), 예시는
+창 맨 아래에 상태바가 항상 표시된다 (iTerm2 상태바와 유사).
+
+- **왼쪽**: 현재 작업 디렉터리(홈은 `~`로 축약) + git 브랜치.
+- **오른쪽**: CPU 사용률 · 메모리(사용/전체) · 시계(HH:MM:SS).
+
+작업 디렉터리는 셸 통합이 보내는 **OSC 7**로 추적하고, git 브랜치는 그
+디렉터리에서 상위로 올라가며 `.git/HEAD`를 읽어 구한다. 시계·CPU·메모리는
+1초마다 갱신된다.
+
+## 설정 · 테마 · 프리셋
+
+`~/.config/terminal-dev/config`에서 폰트·색·스크롤백을 바꾼다. `theme = guezwhoz`
+같은 컬러 프리셋과 16색 ANSI 팔레트, Nerd Font 지정(powerline 글리프)을 지원한다.
+자세한 항목은 [configuration.md](configuration.md), 예시는
 [`config.example`](../config.example).
+
+iTerm2를 쓰던 사람은 iTerm2의 프로파일 색을 그대로 옮길 수 있다 —
+`Custom Color Presets`의 16색 값을 `palette-0`~`palette-15`로, 배경/전경/커서를
+각 키로 넣으면 된다. `guezwhoz` 프리셋은 iTerm2 Guezwhoz 스킴을 내장한 예다.

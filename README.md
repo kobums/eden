@@ -17,7 +17,8 @@
 - **세션 지속성** — 창을 닫아도 셸이 데몬에 살아남고, 다시 열면 복원 (detach/attach)
 - **하이퍼링크** — OSC 8 링크에 밑줄 + Cmd+클릭으로 열기
 - **커맨드 팔레트** — Cmd+Shift+P
-- **설정 파일** — `~/.config/terminal-dev/config` (Ghostty식 `key = value`)
+- **하단 상태바** — 작업 디렉터리 · git 브랜치 · CPU · 메모리 · 시계 (iTerm2 스타일)
+- **설정 · 테마** — `~/.config/terminal-dev/config`, 컬러 프리셋(`theme = guezwhoz`) + 16색 팔레트 + Nerd Font
 
 ## 빌드
 
