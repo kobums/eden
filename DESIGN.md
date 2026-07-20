@@ -73,7 +73,13 @@
   - 렌더러 다중 페인화 (PaneView), 커서/IME/블록바는 페인별, 휠은 마우스 아래 페인
   - 검증: Cmd+D 분할 → 새 페인 포커스 → 독립 실행 확인
   - 남은 것: 페인 줌, 구분선 드래그 리사이즈, 선언적 레이아웃(Zellij식)
-- [ ] Phase 6 — AI: 블록 컨텍스트 기반 자연어 → 명령 생성, 에러 설명. BYOK + Ollama (차별화 ①)
+- [x] Phase 6 — AI: 블록 컨텍스트 기반 자연어 → 명령 생성. BYOK + Ollama (차별화 ①)
+  - `ai.rs`: 로컬 우선 라우팅 — ANTHROPIC_API_KEY 있으면 Anthropic(claude-opus-4-8), 없으면 로컬 Ollama
+  - Cmd+K로 하단 AI 입력 바 → 자연어(한/영) 입력 → Enter로 생성 (별도 스레드, 취소 시퀀스)
+  - 컨텍스트: 포커스 페인 최근 화면 텍스트 + 마지막 종료 코드를 함께 전송
+  - **안전 원칙: 생성된 명령은 입력줄에 삽입만 하고 실행하지 않음** (실행은 항상 사용자 몫)
+  - 검증: Cmd+K → "show disk usage" → `ls -la /tmp` 프롬프트 삽입(미실행) 확인
+  - 남은 것: 스트리밍 응답, 에러 설명 모드, 명령 미리보기/수정 UI, ant 프로필 인증
 - [ ] Phase 7 — 세션 지속성: detach/attach, 재시작 후 복원 (차별화 ②-b)
 - [ ] Phase 8 — 프로토콜 완성: Kitty keyboard/graphics, mode 2026 synchronized output, OSC 8, OSC 52
 - [ ] Phase 9 — 프로덕트화: 설정(key=value), 테마, Quake 모드, 커맨드 팔레트, 배포(brew cask)
