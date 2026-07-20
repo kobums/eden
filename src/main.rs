@@ -4,6 +4,7 @@
 //! Cmd+Option+화살표로 포커스를 옮기고, Cmd+W는 포커스된 페인을 닫는다.
 
 mod ai;
+mod config;
 mod layout;
 mod mux;
 mod renderer;
@@ -93,6 +94,41 @@ impl State {
     }
 }
 
+/// 커맨드 팔레트 액션.
+#[derive(Clone, Copy)]
+enum PaletteAction {
+    NewTab,
+    CloseTab,
+    SplitRight,
+    SplitDown,
+    NextTab,
+    PrevTab,
+    AiGenerate,
+    JumpPrev,
+    JumpNext,
+    CopyLastOutput,
+}
+
+/// 팔레트에 표시되는 액션 목록 (이름, 동작).
+const PALETTE_ACTIONS: &[(&str, PaletteAction)] = &[
+    ("New Tab", PaletteAction::NewTab),
+    ("Close Tab", PaletteAction::CloseTab),
+    ("Split Right", PaletteAction::SplitRight),
+    ("Split Down", PaletteAction::SplitDown),
+    ("Next Tab", PaletteAction::NextTab),
+    ("Previous Tab", PaletteAction::PrevTab),
+    ("AI: Generate Command", PaletteAction::AiGenerate),
+    ("Jump to Previous Prompt", PaletteAction::JumpPrev),
+    ("Jump to Next Prompt", PaletteAction::JumpNext),
+    ("Copy Last Command Output", PaletteAction::CopyLastOutput),
+];
+
+/// 커맨드 팔레트 상태.
+struct Palette {
+    query: String,
+    selected: usize,
+}
+
 /// AI 명령 생성 바의 상태.
 enum AiState {
     Idle,
@@ -109,9 +145,11 @@ struct App {
     modifiers: Modifiers,
     clipboard: Option<arboard::Clipboard>,
     next_pane_id: usize,
+    config: config::Config,
     ai: AiState,
     /// 취소된 요청의 늦은 응답을 무시하기 위한 시퀀스 번호
     ai_seq: u64,
+    palette: Option<Palette>,
 
     // 마우스 상태
     mouse_pos: PhysicalPosition<f64>,
@@ -138,7 +176,11 @@ impl App {
             cell_height: state.renderer.cell_height as u16,
         };
         let session =
-            session::Session::new(session::EventProxy::new(self.proxy.clone(), id), ws);
+            session::Session::new(
+                session::EventProxy::new(self.proxy.clone(), id),
+                ws,
+                self.config.scrollback,
+            );
         Pane {
             id,
             session,
@@ -174,7 +216,12 @@ impl App {
             cell_height: state.renderer.cell_height as u16,
         };
         let Some(session) =
-            session::Session::attach(session::EventProxy::new(self.proxy.clone(), id), session_id, ws)
+            session::Session::attach(
+                session::EventProxy::new(self.proxy.clone(), id),
+                session_id,
+                ws,
+                self.config.scrollback,
+            )
         else {
             return; // 세션이 이미 사라졌으면 건너뛴다
         };
@@ -521,6 +568,54 @@ impl App {
         state.window.request_redraw();
     }
 
+    /// 현재 쿼리로 필터된 팔레트 액션들.
+    fn palette_matches(query: &str) -> Vec<(&'static str, PaletteAction)> {
+        let q = query.to_lowercase();
+        PALETTE_ACTIONS
+            .iter()
+            .filter(|(name, _)| q.is_empty() || name.to_lowercase().contains(&q))
+            .copied()
+            .collect()
+    }
+
+    /// 선택된 팔레트 액션을 실행한다.
+    fn run_palette_action(&mut self, action: PaletteAction, event_loop: &ActiveEventLoop) {
+        match action {
+            PaletteAction::NewTab => self.new_tab(),
+            PaletteAction::CloseTab => {
+                let focused = self.state.as_ref().unwrap().active_tab().focused;
+                self.close_pane(focused, true, event_loop);
+            }
+            PaletteAction::SplitRight => self.split_pane(SplitDir::Row),
+            PaletteAction::SplitDown => self.split_pane(SplitDir::Column),
+            PaletteAction::NextTab => {
+                let state = self.state.as_ref().unwrap();
+                let next = (state.active + 1) % state.tabs.len();
+                self.switch_tab(next);
+            }
+            PaletteAction::PrevTab => {
+                let state = self.state.as_ref().unwrap();
+                let prev = (state.active + state.tabs.len() - 1) % state.tabs.len();
+                self.switch_tab(prev);
+            }
+            PaletteAction::AiGenerate => {
+                self.ai = AiState::Input(String::new());
+                self.state.as_ref().unwrap().window.request_redraw();
+            }
+            PaletteAction::JumpPrev => {
+                let state = self.state.as_ref().unwrap();
+                state.focused_pane().session.jump_to_prompt(-1);
+                state.window.request_redraw();
+            }
+            PaletteAction::JumpNext => {
+                let state = self.state.as_ref().unwrap();
+                state.focused_pane().session.jump_to_prompt(1);
+                state.window.request_redraw();
+            }
+            PaletteAction::CopyLastOutput => self.copy_last_output(),
+        }
+    }
+
     /// 입력이 발생하면 선택을 해제하고 화면을 맨 아래로 되돌린다.
     fn on_user_input(pane: &Pane) {
         let mut term = pane.session.term.lock();
@@ -604,7 +699,26 @@ impl App {
             None
         };
 
-        let ime_pos = renderer.draw(&views, pane_preedit, &titles, *active, ai_line.as_deref());
+        // 커맨드 팔레트 오버레이
+        let palette_names: Vec<String>;
+        let palette_arg = if let Some(p) = &self.palette {
+            palette_names = Self::palette_matches(&p.query)
+                .iter()
+                .map(|(name, _)| name.to_string())
+                .collect();
+            Some((p.query.as_str(), palette_names.as_slice(), p.selected))
+        } else {
+            None
+        };
+
+        let ime_pos = renderer.draw(
+            &views,
+            pane_preedit,
+            &titles,
+            *active,
+            ai_line.as_deref(),
+            palette_arg,
+        );
         drop(views);
 
         // IME 후보창을 커서 바로 아래에 배치
@@ -628,7 +742,7 @@ impl ApplicationHandler<AppEvent> for App {
         let window = Arc::new(event_loop.create_window(attrs).expect("창 생성 실패"));
         window.set_ime_allowed(true);
 
-        let renderer = renderer::Renderer::new(Arc::clone(&window));
+        let renderer = renderer::Renderer::new(Arc::clone(&window), &self.config);
         self.clipboard = arboard::Clipboard::new().ok();
         self.state = Some(State {
             window,
@@ -776,6 +890,52 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 let mods = self.modifiers.state();
 
+                // 커맨드 팔레트 활성 중: 키 입력을 가로챈다
+                if self.palette.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => self.palette = None,
+                        Key::Named(NamedKey::Enter) => {
+                            let p = self.palette.take().unwrap();
+                            let matches = Self::palette_matches(&p.query);
+                            if let Some((_, action)) = matches.get(p.selected).copied() {
+                                self.run_palette_action(action, event_loop);
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            if let Some(p) = &mut self.palette {
+                                let n = Self::palette_matches(&p.query).len();
+                                if n > 0 {
+                                    p.selected = (p.selected + 1) % n;
+                                }
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            if let Some(p) = &mut self.palette {
+                                let n = Self::palette_matches(&p.query).len();
+                                if n > 0 {
+                                    p.selected = (p.selected + n - 1) % n;
+                                }
+                            }
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            if let Some(p) = &mut self.palette {
+                                p.query.pop();
+                                p.selected = 0;
+                            }
+                        }
+                        _ => {
+                            if !mods.control_key() && !mods.super_key() {
+                                if let (Some(p), Some(text)) = (&mut self.palette, &event.text) {
+                                    p.query.push_str(text);
+                                    p.selected = 0;
+                                }
+                            }
+                        }
+                    }
+                    self.state.as_ref().unwrap().window.request_redraw();
+                    return;
+                }
+
                 // AI 입력 바 활성 중: 키 입력을 바로 가로챈다
                 if !matches!(self.ai, AiState::Idle) {
                     match &event.logical_key {
@@ -817,6 +977,14 @@ impl ApplicationHandler<AppEvent> for App {
                         return;
                     }
                     match event.logical_key.as_ref() {
+                        // 커맨드 팔레트 (Cmd+Shift+P)
+                        Key::Character("p") | Key::Character("P") if mods.shift_key() => {
+                            self.palette = Some(Palette {
+                                query: String::new(),
+                                selected: 0,
+                            });
+                            self.state.as_ref().unwrap().window.request_redraw();
+                        }
                         // AI 명령 생성 바
                         Key::Character("k") => {
                             self.ai = AiState::Input(String::new());
@@ -1118,8 +1286,10 @@ fn main() {
         modifiers: Modifiers::default(),
         clipboard: None,
         next_pane_id: 0,
+        config: config::Config::load(),
         ai: AiState::Idle,
         ai_seq: 0,
+        palette: None,
         mouse_pos: PhysicalPosition::new(0.0, 0.0),
         left_button_down: false,
         last_click_at: None,
