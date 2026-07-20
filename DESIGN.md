@@ -66,7 +66,13 @@
   - 탭 바 렌더링(활성 하이라이트, OSC 제목 반영), 탭 클릭 전환
   - Cmd+T 새 탭, Cmd+W 닫기(셸 종료 시 자동 닫힘), Cmd+1..9, Cmd+Shift+[/], 마지막 탭 닫으면 종료
   - 검증: Cmd+T → 2번 탭 생성·독립 실행·제목 반영 확인
-- [ ] Phase 5b — 분할(페인): 네이티브 페인 분할, 페인 줌, 선언적 레이아웃(Zellij 참고) (차별화 ②-a 2단계)
+- [x] Phase 5b — 분할(페인): 이진 분할 트리 (차별화 ②-a 2단계)
+  - `layout.rs`: 페인 이진 분할 트리 (split_leaf/remove/layout), 탭 = 트리
+  - Cmd+D 좌우 / Cmd+Shift+D 상하 분할, Cmd+Option+화살표 포커스 이동, 클릭 포커스
+  - Cmd+W = 포커스 페인 닫기 (마지막 페인이면 탭, 마지막 탭이면 앱 종료), 셸 exit도 동일
+  - 렌더러 다중 페인화 (PaneView), 커서/IME/블록바는 페인별, 휠은 마우스 아래 페인
+  - 검증: Cmd+D 분할 → 새 페인 포커스 → 독립 실행 확인
+  - 남은 것: 페인 줌, 구분선 드래그 리사이즈, 선언적 레이아웃(Zellij식)
 - [ ] Phase 6 — AI: 블록 컨텍스트 기반 자연어 → 명령 생성, 에러 설명. BYOK + Ollama (차별화 ①)
 - [ ] Phase 7 — 세션 지속성: detach/attach, 재시작 후 복원 (차별화 ②-b)
 - [ ] Phase 8 — 프로토콜 완성: Kitty keyboard/graphics, mode 2026 synchronized output, OSC 8, OSC 52
