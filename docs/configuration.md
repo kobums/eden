@@ -20,6 +20,7 @@ background = #16161e
 
 | 키 | 값 | 기본값 | 설명 |
 |---|---|---|---|
+| `theme` | 프리셋 이름 | `catppuccin` | 컬러 프리셋. `catppuccin` \| `guezwhoz`(iTerm2 다크) |
 | `font-size` | 실수 (6~72) | `14` | 폰트 크기 (논리 픽셀) |
 | `font-path` | 파일 경로 | (시스템 자동) | 주 폰트 파일. 없으면 Menlo/Monaco/SF Mono 순으로 자동 선택 |
 | `scrollback` | 정수 | `10000` | 스크롤백 줄 수 (최대 1,000,000) |
@@ -27,8 +28,26 @@ background = #16161e
 | `foreground` | `#rrggbb` | `#d9d9de` | 기본 전경색 |
 | `cursor-color` | `#rrggbb` | `#d9d9de` | 커서 색 |
 | `selection-color` | `#rrggbb` | `#3b547a` | 선택 영역 배경색 |
+| `palette-0` … `palette-15` | `#rrggbb` | (프리셋) | 16색 ANSI 팔레트 (0~7 표준, 8~15 밝은색) |
 
 색은 `#` 유무 모두 허용된다 (`#16161e` = `16161e`).
+
+## 컬러 프리셋
+
+`theme = <이름>`으로 프리셋을 고른다. 프리셋은 배경/전경/커서/선택 + 16색
+팔레트를 한 번에 설정한다. `theme`을 **먼저** 두고 그 아래에서 개별 색 키로
+일부만 덮어쓸 수 있다.
+
+```
+theme = guezwhoz          # iTerm2 다크 프리셋 (bg #1d1d1d, 시안 계열)
+font-path = /Users/me/Library/Fonts/MesloLGS NF Regular.ttf   # powerline 글리프
+cursor-color = #ffffff    # 프리셋 커서색만 덮어쓰기
+```
+
+| 프리셋 | 성격 |
+|---|---|
+| `catppuccin` | 기본 (다크, 파스텔) |
+| `guezwhoz` | iTerm2 Guezwhoz 다크 프리셋 |
 
 ## 예시
 

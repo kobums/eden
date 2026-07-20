@@ -27,13 +27,14 @@ pub struct PaneView<'a> {
 const PADDING: f32 = 8.0;
 const ATLAS_SIZE: u32 = 2048;
 
-/// 설정에서 온 배경/전경/선택/커서 색.
+/// 설정에서 온 배경/전경/선택/커서 색 + 16색 ANSI 팔레트.
 #[derive(Clone, Copy)]
 struct Theme {
     bg: [f32; 3],
     fg: [f32; 3],
     selection: [f32; 3],
     cursor: [f32; 3],
+    palette: [[f32; 3]; 16],
 }
 
 /// 블록 상태 바 색: 실행 중 / 성공 / 실패
@@ -137,6 +138,7 @@ impl Renderer {
             fg: config.foreground,
             selection: config.selection,
             cursor: config.cursor,
+            palette: config.palette,
         };
         // 아래에서 wgpu의 SurfaceConfiguration도 `config`라는 지역 변수를 쓰므로,
         // 앱 설정 값은 여기서 미리 꺼내 둔다.
@@ -749,8 +751,8 @@ impl Renderer {
                     continue;
                 }
 
-                let mut fg = ansi_to_rgb(&indexed.fg, theme.fg, theme.bg, theme.fg);
-                let mut bg = ansi_to_rgb(&indexed.bg, theme.bg, theme.bg, theme.fg);
+                let mut fg = ansi_to_rgb(&indexed.fg, &theme);
+                let mut bg = ansi_to_rgb(&indexed.bg, &theme);
                 if flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -1004,76 +1006,48 @@ impl Renderer {
     }
 }
 
-/// ANSI 색 → RGB. 16색 팔레트와 256색 확장을 지원한다.
-/// `bg`/`fg`는 설정 테마의 기본 배경/전경으로, Named(Background/Foreground)에 쓰인다.
-fn ansi_to_rgb(color: &AnsiColor, default: [f32; 3], bg: [f32; 3], fg: [f32; 3]) -> [f32; 3] {
+/// ANSI 색 → RGB. 설정 팔레트(16색)와 256색 확장을 지원한다.
+fn ansi_to_rgb(color: &AnsiColor, theme: &Theme) -> [f32; 3] {
     match color {
         AnsiColor::Spec(rgb) => [
             rgb.r as f32 / 255.0,
             rgb.g as f32 / 255.0,
             rgb.b as f32 / 255.0,
         ],
-        AnsiColor::Named(named) => named_color(*named, default, bg, fg),
-        AnsiColor::Indexed(idx) => indexed_color(*idx, default, bg, fg),
+        AnsiColor::Named(named) => named_color(*named, theme),
+        AnsiColor::Indexed(idx) => indexed_color(*idx, theme),
     }
 }
 
-fn named_color(named: NamedColor, default: [f32; 3], bg: [f32; 3], fg: [f32; 3]) -> [f32; 3] {
+fn named_color(named: NamedColor, theme: &Theme) -> [f32; 3] {
+    let p = &theme.palette;
     match named {
-        NamedColor::Black | NamedColor::DimBlack => rgb8(0x2e, 0x2e, 0x3e),
-        NamedColor::Red | NamedColor::DimRed => rgb8(0xf3, 0x8b, 0xa8),
-        NamedColor::Green | NamedColor::DimGreen => rgb8(0xa6, 0xe3, 0xa1),
-        NamedColor::Yellow | NamedColor::DimYellow => rgb8(0xf9, 0xe2, 0xaf),
-        NamedColor::Blue | NamedColor::DimBlue => rgb8(0x89, 0xb4, 0xfa),
-        NamedColor::Magenta | NamedColor::DimMagenta => rgb8(0xcb, 0xa6, 0xf7),
-        NamedColor::Cyan | NamedColor::DimCyan => rgb8(0x94, 0xe2, 0xd5),
-        NamedColor::White | NamedColor::DimWhite => rgb8(0xba, 0xc2, 0xde),
-        NamedColor::BrightBlack => rgb8(0x58, 0x5b, 0x70),
-        NamedColor::BrightRed => rgb8(0xf3, 0x8b, 0xa8),
-        NamedColor::BrightGreen => rgb8(0xa6, 0xe3, 0xa1),
-        NamedColor::BrightYellow => rgb8(0xf9, 0xe2, 0xaf),
-        NamedColor::BrightBlue => rgb8(0x89, 0xb4, 0xfa),
-        NamedColor::BrightMagenta => rgb8(0xcb, 0xa6, 0xf7),
-        NamedColor::BrightCyan => rgb8(0x94, 0xe2, 0xd5),
-        NamedColor::BrightWhite => rgb8(0xff, 0xff, 0xff),
-        NamedColor::Background => bg,
-        NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::Cursor => fg,
-        _ => default,
+        NamedColor::Black | NamedColor::DimBlack => p[0],
+        NamedColor::Red | NamedColor::DimRed => p[1],
+        NamedColor::Green | NamedColor::DimGreen => p[2],
+        NamedColor::Yellow | NamedColor::DimYellow => p[3],
+        NamedColor::Blue | NamedColor::DimBlue => p[4],
+        NamedColor::Magenta | NamedColor::DimMagenta => p[5],
+        NamedColor::Cyan | NamedColor::DimCyan => p[6],
+        NamedColor::White | NamedColor::DimWhite => p[7],
+        NamedColor::BrightBlack => p[8],
+        NamedColor::BrightRed => p[9],
+        NamedColor::BrightGreen => p[10],
+        NamedColor::BrightYellow => p[11],
+        NamedColor::BrightBlue => p[12],
+        NamedColor::BrightMagenta => p[13],
+        NamedColor::BrightCyan => p[14],
+        NamedColor::BrightWhite => p[15],
+        NamedColor::Background => theme.bg,
+        NamedColor::Foreground | NamedColor::BrightForeground => theme.fg,
+        NamedColor::Cursor => theme.cursor,
+        _ => theme.fg,
     }
 }
 
-fn indexed_color(idx: u8, default: [f32; 3], bg: [f32; 3], fg: [f32; 3]) -> [f32; 3] {
+fn indexed_color(idx: u8, theme: &Theme) -> [f32; 3] {
     match idx {
-        0..=7 => named_color(
-            match idx {
-                0 => NamedColor::Black,
-                1 => NamedColor::Red,
-                2 => NamedColor::Green,
-                3 => NamedColor::Yellow,
-                4 => NamedColor::Blue,
-                5 => NamedColor::Magenta,
-                6 => NamedColor::Cyan,
-                _ => NamedColor::White,
-            },
-            default,
-            bg,
-            fg,
-        ),
-        8..=15 => named_color(
-            match idx {
-                8 => NamedColor::BrightBlack,
-                9 => NamedColor::BrightRed,
-                10 => NamedColor::BrightGreen,
-                11 => NamedColor::BrightYellow,
-                12 => NamedColor::BrightBlue,
-                13 => NamedColor::BrightMagenta,
-                14 => NamedColor::BrightCyan,
-                _ => NamedColor::BrightWhite,
-            },
-            default,
-            bg,
-            fg,
-        ),
+        0..=15 => theme.palette[idx as usize],
         16..=231 => {
             let i = idx as u32 - 16;
             let steps = [0u8, 95, 135, 175, 215, 255];
