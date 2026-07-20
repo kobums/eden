@@ -1963,6 +1963,7 @@ dependencies = [
  "arboard",
  "bytemuck",
  "fontdue",
+ "libc",
  "pollster",
  "unicode-width",
  "wgpu",
