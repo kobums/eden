@@ -13,6 +13,8 @@ _termdev_precmd() {
     unset _termdev_executing
   fi
   printf '\e]133;A\a'
+  # OSC 7: 현재 작업 디렉터리 보고 (상태바에서 사용)
+  printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}"
 }
 
 _termdev_preexec() {

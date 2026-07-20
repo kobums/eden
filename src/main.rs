@@ -57,15 +57,16 @@ impl State {
         tab.root.pane(tab.focused).expect("포커스된 페인 없음")
     }
 
-    /// 탭 바 아래 콘텐츠 영역.
+    /// 탭 바와 상태바 사이의 콘텐츠 영역.
     fn content_rect(&self) -> Rect {
         let size = self.window.inner_size();
         let bar_h = self.renderer.tab_bar_height();
+        let status_h = self.renderer.status_bar_height();
         Rect {
             x: 0.0,
             y: bar_h,
             w: size.width as f32,
-            h: (size.height as f32 - bar_h).max(1.0),
+            h: (size.height as f32 - bar_h - status_h).max(1.0),
         }
     }
 
@@ -154,6 +155,8 @@ struct App {
     _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
     /// Quake 드롭다운으로 숨겨진 상태인지
     quake_hidden: bool,
+    /// 상태바용 시스템 지표 (틱마다 갱신)
+    sys: sysinfo::System,
 
     // 마우스 상태
     mouse_pos: PhysicalPosition<f64>,
@@ -678,8 +681,43 @@ impl App {
         term.scroll_display(Scroll::Bottom);
     }
 
+    /// 포커스된 페인 기준 상태바 문자열 (왼쪽, 오른쪽)을 만든다.
+    fn status_strings(&self) -> (String, String) {
+        let state = self.state.as_ref().unwrap();
+        let cwd = state.focused_pane().session.cwd();
+
+        // 왼쪽: cwd(홈은 ~로 축약) + git 브랜치
+        let home = std::env::var("HOME").unwrap_or_default();
+        let display_cwd = if !cwd.is_empty() && !home.is_empty() && cwd.starts_with(&home) {
+            format!("~{}", &cwd[home.len()..])
+        } else if cwd.is_empty() {
+            "—".to_string()
+        } else {
+            cwd.clone()
+        };
+        let mut left = format!(" \u{1F4C1} {display_cwd}");
+        if let Some(branch) = git_branch(&cwd) {
+            left.push_str(&format!("   \u{E0A0} {branch}"));
+        }
+
+        // 오른쪽: CPU · MEM · 시계
+        let cpu = self.sys.global_cpu_usage();
+        let mem_used = self.sys.used_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
+        let mem_total = self.sys.total_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
+        let right = format!(
+            "CPU {cpu:.0}%   MEM {mem_used:.1}/{mem_total:.0}G   {}  ",
+            clock_hms()
+        );
+        (left, right)
+    }
+
     fn redraw(&mut self) {
-        let Some(state) = &mut self.state else { return };
+        if self.state.is_none() {
+            return;
+        }
+        // self.state를 가변 차용하기 전에 상태바 문자열을 먼저 만든다.
+        let status = self.status_strings();
+        let state = self.state.as_mut().unwrap();
         // renderer(가변)와 tabs(불변)를 동시에 빌리기 위해 필드를 분리 차용한다.
         let State {
             window,
@@ -690,11 +728,12 @@ impl App {
         let content = {
             let size = window.inner_size();
             let bar = renderer.tab_bar_height();
+            let status = renderer.status_bar_height();
             Rect {
                 x: 0.0,
                 y: bar,
                 w: size.width as f32,
-                h: (size.height as f32 - bar).max(1.0),
+                h: (size.height as f32 - bar - status).max(1.0),
             }
         };
         let tab = &tabs[*active];
@@ -773,6 +812,7 @@ impl App {
             *active,
             ai_line.as_deref(),
             palette_arg,
+            Some((status.0.as_str(), status.1.as_str())),
         );
         drop(views);
 
@@ -826,6 +866,15 @@ impl ApplicationHandler<AppEvent> for App {
 
         // Quake 드롭다운: Ctrl+` 전역 핫키를 등록한다.
         self.register_quake_hotkey();
+
+        // 상태바(시계·CPU·메모리) 갱신용 1초 틱.
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if proxy.send_event(AppEvent::Tick).is_err() {
+                break; // 앱 종료
+            }
+        });
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
@@ -835,6 +884,13 @@ impl ApplicationHandler<AppEvent> for App {
         // Quake 전역 핫키: 드롭다운 토글
         if let AppEvent::QuakeToggle = app_event {
             self.toggle_quake();
+            return;
+        }
+        // 상태바 갱신 틱: 시스템 지표 새로고침 + 재그리기
+        if let AppEvent::Tick = app_event {
+            self.sys.refresh_cpu_usage();
+            self.sys.refresh_memory();
+            self.state.as_ref().unwrap().window.request_redraw();
             return;
         }
         // AI 생성 결과: 명령을 해당 페인의 입력줄에 삽입한다 (실행하지 않음)
@@ -1286,6 +1342,43 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
+/// cwd에서 상위로 올라가며 `.git/HEAD`를 찾아 현재 브랜치명을 돌려준다.
+/// detached면 짧은 커밋 해시.
+fn git_branch(cwd: &str) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    let mut dir = std::path::PathBuf::from(cwd);
+    loop {
+        let head = dir.join(".git/HEAD");
+        if let Ok(content) = std::fs::read_to_string(&head) {
+            let content = content.trim();
+            if let Some(rest) = content.strip_prefix("ref: refs/heads/") {
+                return Some(rest.to_string());
+            }
+            // detached HEAD: 짧은 해시
+            return Some(content.chars().take(7).collect());
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// 로컬 시간 HH:MM:SS (libc localtime, 추가 의존성 없이).
+fn clock_hms() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::localtime_r(&secs, &mut tm);
+    }
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
 /// 키 입력을 PTY로 보낼 바이트 시퀀스로 변환한다.
 fn key_to_bytes(event: &KeyEvent, mods: ModifiersState) -> Option<Vec<u8>> {
     if let Key::Named(named) = &event.logical_key {
@@ -1355,6 +1448,7 @@ fn main() {
         palette: None,
         _hotkey: None,
         quake_hidden: false,
+        sys: sysinfo::System::new(),
         mouse_pos: PhysicalPosition::new(0.0, 0.0),
         left_button_down: false,
         last_click_at: None,

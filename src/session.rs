@@ -25,6 +25,8 @@ pub enum AppEvent {
     },
     /// Quake 드롭다운 토글 (전역 핫키)
     QuakeToggle,
+    /// 상태바 갱신용 주기적 틱 (~1초)
+    Tick,
 }
 
 /// 터미널 이벤트를 (페인 ID와 함께) winit 이벤트 루프로 전달하는 리스너.
@@ -102,6 +104,8 @@ pub struct Block {
 pub struct Session {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     pub marks: Marks,
+    /// OSC 7으로 보고된 현재 작업 디렉터리 (상태바용).
+    pub cwd: Arc<Mutex<String>>,
     client: Arc<MuxClient>,
 }
 
@@ -154,17 +158,19 @@ impl Session {
         let term = Term::new(config, &size, proxy.clone());
         let term = Arc::new(FairMutex::new(term));
         let marks: Marks = Arc::new(Mutex::new(Vec::new()));
+        let cwd: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
         // 읽기 스레드: 데몬이 보내는 출력(리플레이 + 라이브)을
         // OSC 133 스캐너를 거쳐 파서에 공급한다.
         {
             let term = Arc::clone(&term);
             let marks = Arc::clone(&marks);
+            let cwd = Arc::clone(&cwd);
             let proxy = proxy.clone();
             std::thread::Builder::new()
                 .name("mux-reader".into())
                 .spawn(move || {
-                    reader_loop(read_stream, term, marks, proxy);
+                    reader_loop(read_stream, term, marks, cwd, proxy);
                 })
                 .expect("읽기 스레드 생성 실패");
         }
@@ -172,8 +178,14 @@ impl Session {
         Self {
             term,
             marks,
+            cwd,
             client: Arc::new(client),
         }
+    }
+
+    /// 현재 작업 디렉터리 (OSC 7). 없으면 빈 문자열.
+    pub fn cwd(&self) -> String {
+        self.cwd.lock().unwrap().clone()
     }
 
     /// 키 입력 등을 데몬 세션(PTY)으로 보낸다.
@@ -283,6 +295,7 @@ fn reader_loop(
     mut stream: std::os::unix::net::UnixStream,
     term: Arc<FairMutex<Term<EventProxy>>>,
     marks: Marks,
+    cwd: Arc<Mutex<String>>,
     proxy: EventProxy,
 ) {
     let mut parser = Processor::new();
@@ -290,6 +303,7 @@ fn reader_loop(
     // synchronized output 상태: sync 중에는 redraw를 억제하고, 종료 시 한 번에 그린다.
     let mut sync = false;
     let mut sync_carry: Vec<u8> = Vec::new();
+    let mut cwd_carry: Vec<u8> = Vec::new();
 
     loop {
         match mux::read_msg(&mut stream) {
@@ -297,6 +311,10 @@ fn reader_loop(
                 {
                     let mut term = term.lock();
                     scanner.process(&mut term, &mut parser, &marks, &data);
+                }
+                // OSC 7 작업 디렉터리 감시 (상태바용)
+                if let Some(path) = watch_cwd(&mut cwd_carry, &data) {
+                    *cwd.lock().unwrap() = path;
                 }
                 // mode 2026 진입/종료를 감시해 프레임 원자성을 확보한다.
                 sync = watch_sync(sync, &mut sync_carry, &data);
@@ -311,6 +329,80 @@ fn reader_loop(
         }
     }
     proxy.send_event(Event::Exit);
+}
+
+/// 바이트 스트림에서 OSC 7(`ESC ] 7 ; file://host/path BEL|ST`)을 찾아 경로를
+/// 돌려준다. 청크 경계에 걸친 시퀀스를 위해 carry를 유지한다.
+fn watch_cwd(carry: &mut Vec<u8>, chunk: &[u8]) -> Option<String> {
+    const PREFIX: &[u8] = b"\x1b]7;";
+    carry.extend_from_slice(chunk);
+    let mut result = None;
+
+    loop {
+        let Some(start) = find_subsequence(carry, PREFIX) else {
+            // 프리픽스 없음: 경계에 걸린 프리픽스 후보만 남긴다
+            let keep = longest_prefix_suffix(carry, PREFIX);
+            let cut = carry.len() - keep;
+            carry.drain(..cut);
+            break;
+        };
+        let body = start + PREFIX.len();
+        // 종료: BEL(0x07) 또는 ST(ESC \)
+        let Some(rel) = carry[body..].iter().position(|&b| b == 0x07 || b == 0x1b) else {
+            // 종료 미도착: 프리픽스부터 보관하고 대기
+            carry.drain(..start);
+            break;
+        };
+        let term_pos = body + rel;
+        let end = if carry[term_pos] == 0x1b {
+            if term_pos + 1 >= carry.len() {
+                carry.drain(..start); // ST 미완성, 대기
+                break;
+            }
+            term_pos + 2
+        } else {
+            term_pos + 1
+        };
+        if let Some(path) = parse_osc7(&carry[body..term_pos]) {
+            result = Some(path);
+        }
+        carry.drain(..end);
+    }
+
+    // carry 무한 증가 방지
+    if carry.len() > 8192 {
+        let cut = carry.len() - 8192;
+        carry.drain(..cut);
+    }
+    result
+}
+
+/// `file://hostname/path` → `/path` (퍼센트 디코딩).
+fn parse_osc7(payload: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(payload).ok()?;
+    let rest = s.strip_prefix("file://")?;
+    // 호스트 이후 첫 '/'부터가 경로
+    let path = match rest.find('/') {
+        Some(i) => &rest[i..],
+        None => rest,
+    };
+    // 퍼센트 디코딩 (%20 등)
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = |c: u8| (c as char).to_digit(16);
+            if let (Some(a), Some(b)) = (h(bytes[i + 1]), h(bytes[i + 2])) {
+                out.push((a * 16 + b) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 /// 청크에서 mode 2026 진입(`h`)/종료(`l`)를 감지해 최신 sync 상태를 돌려준다.

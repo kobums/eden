@@ -12,6 +12,7 @@ global-hotkey = "0.8.0"
 libc = "0.2.186"
 pollster = "1.0.1"
 serde_json = "1.0.151"
+sysinfo = "0.39.6"
 unicode-width = "0.2.2"
 ureq = { version = "3.3.0", features = ["json"] }
 wgpu = "30.0.0"

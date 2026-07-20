@@ -418,6 +418,11 @@ impl Renderer {
         (self.cell_height * 1.5).ceil()
     }
 
+    /// 하단 상태바 높이 (물리 픽셀).
+    pub fn status_bar_height(&self) -> f32 {
+        (self.cell_height * 1.4).ceil()
+    }
+
     /// 탭 바 좌표의 클릭이 몇 번째 탭인지 계산한다.
     pub fn tab_hit(&self, x: f64, y: f64, tab_count: usize) -> Option<usize> {
         if y >= self.tab_bar_height() as f64 || tab_count == 0 {
@@ -527,10 +532,15 @@ impl Renderer {
         active_tab: usize,
         ai_bar: Option<&str>,
         palette: Option<(&str, &[String], usize)>,
+        status: Option<(&str, &str)>,
     ) -> Option<(f64, f64)> {
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
         let mut ime_pos = None;
+
+        if let Some((left, right)) = status {
+            self.draw_status_bar(left, right, &mut bg_instances, &mut text_instances);
+        }
 
         for pane in panes {
             let pane_ime = self.draw_pane(
@@ -553,6 +563,64 @@ impl Renderer {
         }
         self.submit(&bg_instances, &text_instances);
         ime_pos
+    }
+
+    /// 하단 상태바. 왼쪽 정렬 `left`, 오른쪽 정렬 `right`.
+    fn draw_status_bar(
+        &mut self,
+        left: &str,
+        right: &str,
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) {
+        let theme = self.theme;
+        let bar_h = self.status_bar_height();
+        let width = self.config.width as f32;
+        let y = self.config.height as f32 - bar_h;
+        bg_instances.push(BgInstance {
+            rect: [0.0, y, width, bar_h],
+            color: [TAB_BAR_BG[0], TAB_BAR_BG[1], TAB_BAR_BG[2], 1.0],
+        });
+
+        let text_y = y + (bar_h - self.cell_height) / 2.0;
+        // 왼쪽
+        let mut x = self.cell_width;
+        for ch in left.chars() {
+            use unicode_width::UnicodeWidthChar;
+            let adv = self.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
+            if x + adv > width - self.cell_width {
+                break;
+            }
+            if let Some(g) = self.glyph(ch) {
+                text_instances.push(TextInstance {
+                    rect: [x + g.offset[0], text_y + g.offset[1], g.size[0], g.size[1]],
+                    uv: g.uv,
+                    color: [theme.fg[0], theme.fg[1], theme.fg[2], 1.0],
+                });
+            }
+            x += adv;
+        }
+        // 오른쪽 (폭 계산 후 우측 정렬)
+        let right_w: f32 = right
+            .chars()
+            .map(|c| {
+                use unicode_width::UnicodeWidthChar;
+                self.cell_width * if c.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 }
+            })
+            .sum();
+        let mut rx = (width - self.cell_width - right_w).max(x);
+        for ch in right.chars() {
+            use unicode_width::UnicodeWidthChar;
+            let adv = self.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
+            if let Some(g) = self.glyph(ch) {
+                text_instances.push(TextInstance {
+                    rect: [rx + g.offset[0], text_y + g.offset[1], g.size[0], g.size[1]],
+                    uv: g.uv,
+                    color: [theme.fg[0], theme.fg[1], theme.fg[2], 1.0],
+                });
+            }
+            rx += adv;
+        }
     }
 
     /// 커맨드 팔레트 오버레이 (화면 중앙 상단). 쿼리 줄 + 필터된 액션 목록.
