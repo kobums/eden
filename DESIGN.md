@@ -50,7 +50,12 @@
   - 한글 IME: preedit 오버레이 렌더링 + 커서 위치에 후보창 배치, 폰트 폴백(Apple SD Gothic Neo)
   - PUA(powerline 아이콘)는 주 폰트에서만 찾도록 제한 (폴백 오검출 방지)
   - 남은 것: 마우스 리포팅(vim 등 앱으로 마우스 이벤트 전달), 검색, ScaleFactorChanged 대응
-- [ ] Phase 3 — 셸 통합: OSC 133 마킹(zsh/bash 스크립트 제공), 프롬프트 점프
+- [x] Phase 3 — 셸 통합: OSC 133 마킹(zsh/bash 스크립트 제공), 프롬프트 점프
+  - 자체 PTY IO 루프로 교체 (alacritty EventLoop 제거) — 파서 앞단에서 OSC 133 가로채기
+  - zsh 통합: `shell/integration.zsh`(precmd/preexec → A/C/D;exit), ZDOTDIR 부트스트랩으로 자동 주입
+  - 마크는 절대 줄 번호(히스토리 포함)로 기록, Cmd+↑/↓ 프롬프트 점프
+  - 검증: 실행 시 `[mark] PromptStart` 기록 확인 (TERMDEV_DEBUG_MARKS=1)
+  - 남은 것: bash/fish 통합, 히스토리 상한(10k) 초과 시 마크 오차, B(프롬프트 끝) 마크 활용
 - [ ] Phase 4 — 블록 UI: 명령+출력 블록 단위 접기/복사/검색/북마크 (차별화 ①)
 - [ ] Phase 5 — 탭/분할: 네이티브 페인 분할, 페인 줌, 선언적 레이아웃(Zellij 참고) (차별화 ②-a)
 - [ ] Phase 6 — AI: 블록 컨텍스트 기반 자연어 → 명령 생성, 에러 설명. BYOK + Ollama (차별화 ①)
