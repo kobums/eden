@@ -3,6 +3,7 @@
 //! 탭 하나는 페인들의 이진 분할 트리다. Cmd+D(좌우)/Cmd+Shift+D(상하)로 나누고,
 //! Cmd+Option+화살표로 포커스를 옮기고, Cmd+W는 포커스된 페인을 닫는다.
 
+mod ai;
 mod layout;
 mod renderer;
 mod session;
@@ -24,7 +25,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use layout::{Pane, PaneNode, Rect, SplitDir};
-use session::TabEvent;
+use session::AppEvent;
 
 /// 더블/트리플 클릭 판정 간격.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -91,12 +92,25 @@ impl State {
     }
 }
 
+/// AI 명령 생성 바의 상태.
+enum AiState {
+    Idle,
+    /// 입력 중인 자연어
+    Input(String),
+    /// 생성 요청 진행 중
+    Pending,
+    Error(String),
+}
+
 struct App {
-    proxy: EventLoopProxy<TabEvent>,
+    proxy: EventLoopProxy<AppEvent>,
     state: Option<State>,
     modifiers: Modifiers,
     clipboard: Option<arboard::Clipboard>,
     next_pane_id: usize,
+    ai: AiState,
+    /// 취소된 요청의 늦은 응답을 무시하기 위한 시퀀스 번호
+    ai_seq: u64,
 
     // 마우스 상태
     mouse_pos: PhysicalPosition<f64>,
@@ -377,6 +391,71 @@ impl App {
         state.window.request_redraw();
     }
 
+    /// AI 입력 바의 자연어를 명령 생성 요청으로 보낸다.
+    fn submit_ai(&mut self) {
+        let AiState::Input(text) = &self.ai else {
+            return;
+        };
+        let request = text.trim().to_string();
+        if request.is_empty() {
+            self.ai = AiState::Idle;
+            return;
+        }
+
+        let state = self.state.as_ref().unwrap();
+        let pane = state.focused_pane();
+        let pane_id = pane.id;
+
+        // 컨텍스트 수집: 최근 화면 텍스트 + 마지막 종료 코드
+        let screen_tail = {
+            let term = pane.session.term.lock();
+            let grid = term.grid();
+            let history = grid.history_size() as i32;
+            let cursor_line = grid.cursor.point.line.0;
+            let cols = grid.columns();
+            let start_line = (cursor_line - 30).max(-history);
+            let text = term.bounds_to_string(
+                Point::new(Line(start_line), Column(0)),
+                Point::new(Line(cursor_line), Column(cols - 1)),
+            );
+            // 너무 길면 끝부분만
+            let max = 4000;
+            if text.len() > max {
+                let cut = text.len() - max;
+                let boundary = (cut..text.len())
+                    .find(|i| text.is_char_boundary(*i))
+                    .unwrap_or(text.len());
+                text[boundary..].to_string()
+            } else {
+                text
+            }
+        };
+        let last_exit = pane
+            .session
+            .blocks()
+            .iter()
+            .rev()
+            .find_map(|block| block.exit);
+
+        self.ai_seq += 1;
+        let seq = self.ai_seq;
+        self.ai = AiState::Pending;
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let context = ai::AiContext {
+                screen_tail,
+                last_exit,
+            };
+            let result = ai::generate_command(&request, &context);
+            let _ = proxy.send_event(AppEvent::AiResult {
+                pane_id,
+                seq,
+                result,
+            });
+        });
+        state.window.request_redraw();
+    }
+
     /// 입력이 발생하면 선택을 해제하고 화면을 맨 아래로 되돌린다.
     fn on_user_input(pane: &Pane) {
         let mut term = pane.session.term.lock();
@@ -442,7 +521,25 @@ impl App {
             })
             .collect();
 
-        let ime_pos = renderer.draw(&views, self.preedit.as_deref(), &titles, *active);
+        // AI 바 표시 문자열 (입력 중이면 preedit도 함께 보여준다)
+        let ai_line = match &self.ai {
+            AiState::Idle => None,
+            AiState::Input(text) => Some(format!(
+                "AI> {}{}_   (Enter 생성 / Esc 닫기)",
+                text,
+                self.preedit.as_deref().unwrap_or("")
+            )),
+            AiState::Pending => Some("AI> 명령 생성 중...".to_string()),
+            AiState::Error(error) => Some(format!("AI 오류: {error}   (Esc 닫기)")),
+        };
+        // AI 바가 열려 있으면 preedit은 바에서 렌더링하므로 페인에는 넘기지 않는다
+        let pane_preedit = if matches!(self.ai, AiState::Idle) {
+            self.preedit.as_deref()
+        } else {
+            None
+        };
+
+        let ime_pos = renderer.draw(&views, pane_preedit, &titles, *active, ai_line.as_deref());
         drop(views);
 
         // IME 후보창을 커서 바로 아래에 배치
@@ -455,7 +552,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<TabEvent> for App {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -477,10 +574,45 @@ impl ApplicationHandler<TabEvent> for App {
         self.new_tab();
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, (pane_id, event): TabEvent) {
-        let Some(state) = &mut self.state else {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
+        if self.state.is_none() {
+            return;
+        }
+        // AI 생성 결과: 명령을 해당 페인의 입력줄에 삽입한다 (실행하지 않음)
+        if let AppEvent::AiResult {
+            pane_id,
+            seq,
+            result,
+        } = app_event
+        {
+            if seq != self.ai_seq || !matches!(self.ai, AiState::Pending) {
+                return; // 취소되었거나 오래된 응답
+            }
+            let state = self.state.as_ref().unwrap();
+            match result {
+                Ok(command) => {
+                    self.ai = AiState::Idle;
+                    let pane = state
+                        .tabs
+                        .iter()
+                        .find_map(|tab| tab.root.pane(pane_id))
+                        .or_else(|| Some(state.focused_pane()));
+                    if let Some(pane) = pane {
+                        // 여러 줄 명령은 개행이 실행으로 이어지지 않게 정리
+                        pane.session
+                            .write(command.replace('\n', " ").into_bytes());
+                    }
+                }
+                Err(error) => self.ai = AiState::Error(error),
+            }
+            state.window.request_redraw();
+            return;
+        }
+
+        let AppEvent::Term(pane_id, event) = app_event else {
             return;
         };
+        let state = self.state.as_mut().unwrap();
         let Some(tab_index) = state
             .tabs
             .iter()
@@ -562,6 +694,33 @@ impl ApplicationHandler<TabEvent> for App {
                 }
                 let mods = self.modifiers.state();
 
+                // AI 입력 바 활성 중: 키 입력을 바로 가로챈다
+                if !matches!(self.ai, AiState::Idle) {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.ai = AiState::Idle;
+                            self.ai_seq += 1; // 진행 중이던 요청 응답 무시
+                        }
+                        Key::Named(NamedKey::Enter) => self.submit_ai(),
+                        Key::Named(NamedKey::Backspace) => {
+                            if let AiState::Input(text) = &mut self.ai {
+                                text.pop();
+                            }
+                        }
+                        _ => {
+                            if !mods.control_key() && !mods.super_key() {
+                                if let (AiState::Input(buffer), Some(text)) =
+                                    (&mut self.ai, &event.text)
+                                {
+                                    buffer.push_str(text);
+                                }
+                            }
+                        }
+                    }
+                    self.state.as_ref().unwrap().window.request_redraw();
+                    return;
+                }
+
                 // 앱 단축키 (Cmd 조합)
                 if mods.super_key() {
                     // Cmd+Option+화살표: 페인 포커스 이동
@@ -576,6 +735,11 @@ impl ApplicationHandler<TabEvent> for App {
                         return;
                     }
                     match event.logical_key.as_ref() {
+                        // AI 명령 생성 바
+                        Key::Character("k") => {
+                            self.ai = AiState::Input(String::new());
+                            self.state.as_ref().unwrap().window.request_redraw();
+                        }
                         // 탭
                         Key::Character("t") => self.new_tab(),
                         Key::Character("w") => {
@@ -644,9 +808,14 @@ impl ApplicationHandler<TabEvent> for App {
                     }
                     Ime::Commit(text) => {
                         self.preedit = None;
-                        let pane = state.focused_pane();
-                        Self::on_user_input(pane);
-                        pane.session.write(text.into_bytes());
+                        // AI 입력 바가 열려 있으면 한글 확정 입력도 그쪽으로
+                        if let AiState::Input(buffer) = &mut self.ai {
+                            buffer.push_str(&text);
+                        } else {
+                            let pane = state.focused_pane();
+                            Self::on_user_input(pane);
+                            pane.session.write(text.into_bytes());
+                        }
                     }
                     Ime::Enabled | Ime::Disabled => {}
                 }
@@ -848,7 +1017,7 @@ fn key_to_bytes(event: &KeyEvent, mods: ModifiersState) -> Option<Vec<u8>> {
 }
 
 fn main() {
-    let event_loop = EventLoop::<TabEvent>::with_user_event()
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .expect("이벤트 루프 생성 실패");
     let proxy = event_loop.create_proxy();
@@ -858,6 +1027,8 @@ fn main() {
         modifiers: Modifiers::default(),
         clipboard: None,
         next_pane_id: 0,
+        ai: AiState::Idle,
+        ai_seq: 0,
         mouse_pos: PhysicalPosition::new(0.0, 0.0),
         left_button_down: false,
         last_click_at: None,

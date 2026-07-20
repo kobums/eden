@@ -19,25 +19,32 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::Processor;
 use winit::event_loop::EventLoopProxy;
 
-/// 탭 ID가 태깅된 터미널 이벤트.
-pub type TabEvent = (usize, Event);
+/// 앱 이벤트: 터미널 이벤트(페인 ID 태깅) 또는 AI 생성 결과.
+pub enum AppEvent {
+    Term(usize, Event),
+    AiResult {
+        pane_id: usize,
+        seq: u64,
+        result: Result<String, String>,
+    },
+}
 
-/// 터미널 이벤트를 (탭 ID와 함께) winit 이벤트 루프로 전달하는 리스너.
+/// 터미널 이벤트를 (페인 ID와 함께) winit 이벤트 루프로 전달하는 리스너.
 #[derive(Clone)]
 pub struct EventProxy {
-    proxy: EventLoopProxy<TabEvent>,
+    proxy: EventLoopProxy<AppEvent>,
     tab_id: usize,
 }
 
 impl EventProxy {
-    pub fn new(proxy: EventLoopProxy<TabEvent>, tab_id: usize) -> Self {
+    pub fn new(proxy: EventLoopProxy<AppEvent>, tab_id: usize) -> Self {
         Self { proxy, tab_id }
     }
 }
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
-        let _ = self.proxy.send_event((self.tab_id, event));
+        let _ = self.proxy.send_event(AppEvent::Term(self.tab_id, event));
     }
 }
 

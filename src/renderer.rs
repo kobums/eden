@@ -44,6 +44,9 @@ const BLOCK_FAIL: [f32; 3] = [0.92, 0.42, 0.46];
 const TAB_BAR_BG: [f32; 3] = [0.055, 0.055, 0.075];
 const TAB_INACTIVE_FG: [f32; 3] = [0.5, 0.5, 0.55];
 
+/// AI 입력 바 색.
+const AI_BAR_BG: [f32; 3] = [0.1, 0.14, 0.24];
+
 /// macOS 시스템 고정폭 폰트 후보 (앞에서부터 시도, 첫 성공이 주 폰트).
 const FONT_CANDIDATES: &[&str] = &[
     "/System/Library/Fonts/Menlo.ttc",
@@ -508,6 +511,7 @@ impl Renderer {
         preedit: Option<&str>,
         tab_titles: &[String],
         active_tab: usize,
+        ai_bar: Option<&str>,
     ) -> Option<(f64, f64)> {
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
@@ -526,8 +530,51 @@ impl Renderer {
         }
 
         self.draw_tab_bar(tab_titles, active_tab, &mut bg_instances, &mut text_instances);
+        if let Some(line) = ai_bar {
+            ime_pos = Some(self.draw_ai_bar(line, &mut bg_instances, &mut text_instances));
+        }
         self.submit(&bg_instances, &text_instances);
         ime_pos
+    }
+
+    /// 화면 하단의 AI 입력 바. IME 후보창 배치를 위해 입력 끝 좌표를 돌려준다.
+    fn draw_ai_bar(
+        &mut self,
+        line: &str,
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) -> (f64, f64) {
+        let bar_h = self.tab_bar_height();
+        let width = self.config.width as f32;
+        let y = self.config.height as f32 - bar_h;
+        bg_instances.push(BgInstance {
+            rect: [0.0, y, width, bar_h],
+            color: [AI_BAR_BG[0], AI_BAR_BG[1], AI_BAR_BG[2], 1.0],
+        });
+
+        let label_y = y + (bar_h - self.cell_height) / 2.0;
+        let mut x = self.cell_width;
+        for ch in line.chars() {
+            use unicode_width::UnicodeWidthChar;
+            let advance = self.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
+            if x + advance > width - self.cell_width {
+                break;
+            }
+            if let Some(glyph) = self.glyph(ch) {
+                text_instances.push(TextInstance {
+                    rect: [
+                        x + glyph.offset[0],
+                        label_y + glyph.offset[1],
+                        glyph.size[0],
+                        glyph.size[1],
+                    ],
+                    uv: glyph.uv,
+                    color: [DEFAULT_FG[0], DEFAULT_FG[1], DEFAULT_FG[2], 1.0],
+                });
+            }
+            x += advance;
+        }
+        (x as f64, (y + bar_h) as f64)
     }
 
     /// 페인 하나를 인스턴스 버퍼에 그린다. 포커스된 페인이면 커서 좌표를 돌려준다.
