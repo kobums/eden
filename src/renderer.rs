@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::Term;
@@ -22,12 +23,20 @@ const ATLAS_SIZE: u32 = 2048;
 /// 기본 배경/전경색.
 const DEFAULT_BG: [f32; 3] = [0.086, 0.086, 0.11];
 const DEFAULT_FG: [f32; 3] = [0.85, 0.85, 0.87];
+/// 선택 영역 배경색.
+const SELECTION_BG: [f32; 3] = [0.23, 0.33, 0.48];
 
-/// macOS 시스템 고정폭 폰트 후보 (앞에서부터 시도).
+/// macOS 시스템 고정폭 폰트 후보 (앞에서부터 시도, 첫 성공이 주 폰트).
 const FONT_CANDIDATES: &[&str] = &[
     "/System/Library/Fonts/Menlo.ttc",
     "/System/Library/Fonts/Monaco.ttf",
     "/Library/Fonts/SF-Mono-Regular.otf",
+];
+
+/// 주 폰트에 없는 글리프(한글 등)를 위한 폴백 폰트.
+const FALLBACK_FONTS: &[&str] = &[
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    "/System/Library/Fonts/Apple Symbols.ttf",
 ];
 
 #[repr(C)]
@@ -88,7 +97,7 @@ pub struct Renderer {
     text_capacity: usize,
 
     atlas: Atlas,
-    font: fontdue::Font,
+    fonts: Vec<fontdue::Font>,
     font_px: f32,
     ascent: f32,
 
@@ -135,20 +144,31 @@ impl Renderer {
         surface.configure(&device, &config);
 
         // --- 폰트 ---
-        let font_bytes = FONT_CANDIDATES
+        let primary = FONT_CANDIDATES
             .iter()
-            .find_map(|path| std::fs::read(path).ok())
+            .find_map(|path| {
+                let bytes = std::fs::read(path).ok()?;
+                fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+            })
             .expect("고정폭 폰트를 찾지 못함");
-        let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default())
-            .expect("폰트 파싱 실패");
+        let mut fonts = vec![primary];
+        for path in FALLBACK_FONTS {
+            if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(font) =
+                    fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
+                {
+                    fonts.push(font);
+                }
+            }
+        }
         let font_px = FONT_SIZE * scale;
-        let line_metrics = font
+        let line_metrics = fonts[0]
             .horizontal_line_metrics(font_px)
             .expect("폰트 라인 메트릭 없음");
         let ascent = line_metrics.ascent;
         let cell_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
             .ceil();
-        let cell_width = font.metrics('M', font_px).advance_width.round();
+        let cell_width = fonts[0].metrics('M', font_px).advance_width.round();
 
         // --- atlas ---
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -350,7 +370,7 @@ impl Renderer {
             text_buffer,
             text_capacity: 1024,
             atlas,
-            font,
+            fonts,
             font_px,
             ascent,
             cell_width,
@@ -377,10 +397,17 @@ impl Renderer {
             return *cached;
         }
 
-        let glyph = if self.font.lookup_glyph_index(c) == 0 {
-            None
+        // 주 폰트 → 폴백 폰트 순서로 글리프를 가진 폰트를 찾는다.
+        // 단 PUA(사용자 영역, powerline 아이콘 등)는 폴백 폰트가 엉뚱한 글리프를
+        // 돌려주는 경우가 있어 주 폰트에서만 찾는다.
+        let is_pua = ('\u{E000}'..='\u{F8FF}').contains(&c);
+        let font = if is_pua {
+            self.fonts.first().filter(|f| f.lookup_glyph_index(c) != 0)
         } else {
-            let (metrics, bitmap) = self.font.rasterize(c, self.font_px);
+            self.fonts.iter().find(|f| f.lookup_glyph_index(c) != 0)
+        };
+        let glyph = if let Some(font) = font {
+            let (metrics, bitmap) = font.rasterize(c, self.font_px);
             if metrics.width == 0 || metrics.height == 0 {
                 None
             } else {
@@ -432,29 +459,49 @@ impl Renderer {
                     ],
                 })
             }
+        } else {
+            None
         };
 
         self.atlas.glyphs.insert(c, glyph);
         glyph
     }
 
-    pub fn draw(&mut self, term: &FairMutex<Term<EventProxy>>) {
+    /// 그리드를 그린다. IME 후보창 배치를 위해 커서의 물리 좌표(좌하단)를 돌려준다.
+    pub fn draw(
+        &mut self,
+        term: &FairMutex<Term<EventProxy>>,
+        preedit: Option<&str>,
+    ) -> Option<(f64, f64)> {
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
+        let mut ime_pos = None;
 
         {
             let term = term.lock();
             let content = term.renderable_content();
+            // 스크롤백을 위로 올렸을 때: 그리드 좌표(line)는 화면 좌표(row)와
+            // display_offset만큼 어긋난다.
+            let display_offset = content.display_offset as i32;
+            let selection = content.selection;
             let cursor_point = content.cursor.point;
+            let cursor_row = cursor_point.line.0 + display_offset;
+            let visible_lines = Dimensions::screen_lines(term.grid()) as i32;
+            let cursor_visible = cursor_row >= 0 && cursor_row < visible_lines;
+            let cursor_x = PADDING + cursor_point.column.0 as f32 * self.cell_width;
+            let cursor_y = PADDING + cursor_row as f32 * self.cell_height;
+            if cursor_visible {
+                ime_pos = Some((cursor_x as f64, (cursor_y + self.cell_height) as f64));
+            }
 
             for indexed in content.display_iter {
-                let line = indexed.point.line.0;
-                if line < 0 {
+                let row = indexed.point.line.0 + display_offset;
+                if row < 0 {
                     continue;
                 }
                 let col = indexed.point.column.0;
                 let x = PADDING + col as f32 * self.cell_width;
-                let y = PADDING + line as f32 * self.cell_height;
+                let y = PADDING + row as f32 * self.cell_height;
 
                 let flags = indexed.flags;
                 if flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -467,14 +514,22 @@ impl Renderer {
                     std::mem::swap(&mut fg, &mut bg);
                 }
 
-                let is_cursor = indexed.point == cursor_point;
+                let selected = selection
+                    .as_ref()
+                    .is_some_and(|range| range.contains(indexed.point));
+                if selected {
+                    bg = SELECTION_BG;
+                }
+
+                let is_cursor =
+                    cursor_visible && preedit.is_none() && indexed.point == cursor_point;
                 if is_cursor {
                     // 블록 커서: 배경을 전경색으로, 글자를 배경색으로 반전
                     bg = DEFAULT_FG;
                     fg = DEFAULT_BG;
                 }
 
-                if is_cursor || bg != DEFAULT_BG {
+                if is_cursor || selected || bg != DEFAULT_BG {
                     let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
                     bg_instances.push(BgInstance {
                         rect: [x, y, self.cell_width * width_cells, self.cell_height],
@@ -500,6 +555,33 @@ impl Renderer {
                         uv: glyph.uv,
                         color: [fg[0], fg[1], fg[2], 1.0],
                     });
+                }
+            }
+
+            // IME 조합 중 문자열(preedit)을 커서 위치에 오버레이로 그린다.
+            if let (Some(text), true) = (preedit, cursor_visible) {
+                let mut x = cursor_x;
+                for ch in text.chars() {
+                    use unicode_width::UnicodeWidthChar;
+                    let cells = if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
+                    let w = self.cell_width * cells;
+                    bg_instances.push(BgInstance {
+                        rect: [x, cursor_y, w, self.cell_height],
+                        color: [DEFAULT_FG[0], DEFAULT_FG[1], DEFAULT_FG[2], 1.0],
+                    });
+                    if let Some(glyph) = self.glyph(ch) {
+                        text_instances.push(TextInstance {
+                            rect: [
+                                x + glyph.offset[0],
+                                cursor_y + glyph.offset[1],
+                                glyph.size[0],
+                                glyph.size[1],
+                            ],
+                            uv: glyph.uv,
+                            color: [DEFAULT_BG[0], DEFAULT_BG[1], DEFAULT_BG[2], 1.0],
+                        });
+                    }
+                    x += w;
                 }
             }
         }
@@ -550,10 +632,10 @@ impl Renderer {
                 match self.surface.get_current_texture() {
                     CurrentSurfaceTexture::Success(frame)
                     | CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                    _ => return,
+                    _ => return ime_pos,
                 }
             }
-            _ => return,
+            _ => return ime_pos,
         };
         let view = frame
             .texture
@@ -598,6 +680,7 @@ impl Renderer {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(frame);
+        ime_pos
     }
 }
 

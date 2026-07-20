@@ -57,7 +57,11 @@ impl Session {
             columns: window_size.num_cols as usize,
             lines: window_size.num_lines as usize,
         };
-        let term = Term::new(Config::default(), &size, proxy.clone());
+        let config = Config {
+            scrolling_history: 10_000,
+            ..Config::default()
+        };
+        let term = Term::new(config, &size, proxy.clone());
         let term = Arc::new(FairMutex::new(term));
 
         let mut options = tty::Options::default();
