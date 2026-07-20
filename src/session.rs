@@ -75,6 +75,19 @@ pub struct Mark {
 
 pub type Marks = Arc<Mutex<Vec<Mark>>>;
 
+/// OSC 133 마크로부터 도출된 명령 블록 (프롬프트 + 명령 + 출력 단위).
+#[derive(Clone, Copy, Debug)]
+pub struct Block {
+    /// 프롬프트 시작 줄 (A 마크)
+    pub start_abs: i64,
+    /// 명령 출력 시작 줄 (C 마크) — None이면 명령이 실행되지 않은 프롬프트
+    pub cmd_abs: Option<i64>,
+    /// 명령 종료 줄 (D 마크, 다음 프롬프트가 그려질 줄) — None이면 실행 중
+    pub end_abs: Option<i64>,
+    /// 종료 코드 (D;<exit>)
+    pub exit: Option<i32>,
+}
+
 pub struct Session {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     pub marks: Marks,
@@ -176,6 +189,47 @@ impl Session {
             columns: window_size.num_cols as usize,
             lines: window_size.num_lines as usize,
         });
+    }
+
+    /// 마크 목록에서 블록들을 도출한다.
+    pub fn blocks(&self) -> Vec<Block> {
+        let marks = self.marks.lock().unwrap();
+        let mut blocks: Vec<Block> = Vec::new();
+        for mark in marks.iter() {
+            match mark.kind {
+                MarkKind::PromptStart => blocks.push(Block {
+                    start_abs: mark.abs_line,
+                    cmd_abs: None,
+                    end_abs: None,
+                    exit: None,
+                }),
+                MarkKind::CommandStart => {
+                    if let Some(block) = blocks.last_mut() {
+                        if block.cmd_abs.is_none() {
+                            block.cmd_abs = Some(mark.abs_line);
+                        }
+                    }
+                }
+                MarkKind::CommandEnd(exit) => {
+                    if let Some(block) = blocks.last_mut() {
+                        if block.end_abs.is_none() {
+                            block.end_abs = Some(mark.abs_line);
+                            block.exit = exit;
+                        }
+                    }
+                }
+            }
+        }
+        blocks
+    }
+
+    /// 마지막으로 완료된 명령의 출력 범위 [시작, 끝] (절대 줄 번호).
+    pub fn last_output_range(&self) -> Option<(i64, i64)> {
+        self.blocks().iter().rev().find_map(|block| {
+            let cmd = block.cmd_abs?;
+            let end = block.end_abs?;
+            (end > cmd).then_some((cmd, end - 1))
+        })
     }
 
     /// 이전(-1) / 다음(+1) 프롬프트로 화면을 점프한다 (OSC 133 A 마크 기반).
