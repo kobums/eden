@@ -131,9 +131,6 @@ CI는 macOS 러너에서 위 셋과 빌드를 돌린다 ([.github/workflows/ci.y
   구현.
 - **Kitty graphics protocol** — APC 파싱 + 이미지 디코드 + 별도 GPU 텍스처
   아틀라스/배치 서브시스템 필요.
-- **Phase 10·11의 수동 GUI 검증** — 자동 테스트는 순수 로직만 덮는다.
-  실제 창에서 vim/htop/lazygit/less의 마우스와 Cmd+F 검색을 확인해야 한다
-  (체크리스트는 [design.md](design.md)의 "미결 사항").
 - 코드 서명 · 공증.
 - 설정 확장 (키바인딩 커스터마이즈, 블록/오버레이 색 등 —
   현재 설정 가능한 범위는 [configuration.md](configuration.md) 참고).
