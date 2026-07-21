@@ -10,11 +10,10 @@
 //! 덕분에 새 출력이 들어와도 재스캔할 필요가 없다.
 
 use alacritty_terminal::Term;
+use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
-
-use crate::session::EventProxy;
 
 /// 한 번의 스캔에서 모을 매치 상한. `.` 같은 병리적 쿼리를 막는다.
 const MAX_MATCHES: usize = 1000;
@@ -112,7 +111,11 @@ impl Search {
     ///
     /// 타이핑마다 호출된다 — 10k줄 DFA 스캔은 1ms 미만이고, "3/17" 카운터가
     /// 어차피 전체 개수를 요구하므로 부분 스캔은 의미가 없다.
-    pub(super) fn rescan(&mut self, term: &Term<EventProxy>) {
+    ///
+    /// 리스너에 제네릭인 이유는 테스트 때문이다. 앱은 `EventProxy`를 쓰지만
+    /// 그건 winit 이벤트 루프를 요구하므로, 테스트는 `VoidListener`로 진짜
+    /// `Term`을 만들어 스크롤백이 밀리는 상황까지 검증한다.
+    pub(super) fn rescan<T: EventListener>(&mut self, term: &Term<T>) {
         self.matches.clear();
         self.current = 0;
 
@@ -327,6 +330,181 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::term::Config;
+    use alacritty_terminal::vte::ansi::Processor;
+
+    use crate::session::TermSize;
+
+    /// PTY도 데몬도 없이 진짜 `Term`을 만든다.
+    fn term(cols: usize, lines: usize, scrollback: usize) -> Term<VoidListener> {
+        let config = Config {
+            scrolling_history: scrollback,
+            ..Config::default()
+        };
+        Term::new(
+            config,
+            &TermSize {
+                columns: cols,
+                lines,
+            },
+            VoidListener,
+        )
+    }
+
+    /// 파서를 거쳐 텍스트를 흘려넣는다 (실제 PTY 출력과 같은 경로).
+    fn feed(term: &mut Term<VoidListener>, text: &str) {
+        // Processor의 타임아웃 타입은 기본값(StdSyncHandler)을 쓴다.
+        let mut parser: Processor = Processor::new();
+        parser.advance(term, text.as_bytes());
+    }
+
+    fn scan(query: &str, term: &Term<VoidListener>) -> Search {
+        let mut s = Search::new(0);
+        s.query = query.to_string();
+        s.rescan(term);
+        s
+    }
+
+    #[test]
+    fn finds_matches_in_the_visible_screen() {
+        let mut t = term(40, 10, 100);
+        feed(&mut t, "alpha\r\nbravo\r\ncharlie\r\nalpha again\r\n");
+
+        let s = scan("alpha", &t);
+        assert_eq!(s.matches.len(), 2);
+        assert_eq!(s.status(), "1/2");
+        // 첫 매치는 0번 줄 0열에서 시작한다.
+        assert_eq!(s.matches[0].start_col, 0);
+        assert_eq!(s.matches[0].end_col, 4, "alpha는 5글자 → 0..=4");
+    }
+
+    #[test]
+    fn smart_case_is_inherited_from_alacritty() {
+        let mut t = term(40, 10, 100);
+        feed(&mut t, "Error here\r\nerror there\r\n");
+
+        assert_eq!(scan("error", &t).matches.len(), 2, "소문자 쿼리는 둘 다");
+        assert_eq!(
+            scan("Error", &t).matches.len(),
+            1,
+            "대문자가 섞이면 정확히 일치하는 것만"
+        );
+    }
+
+    #[test]
+    fn no_match_and_invalid_regex_are_distinguished() {
+        let mut t = term(40, 10, 100);
+        feed(&mut t, "hello world\r\n");
+
+        assert_eq!(scan("zzzz", &t).status(), "no match");
+        // 입력 도중의 미완성 정규식 — 패닉하지 않고 invalid로 표시한다.
+        let s = scan("(", &t);
+        assert_eq!(s.status(), "invalid");
+        assert!(s.matches.is_empty());
+    }
+
+    #[test]
+    fn finds_matches_that_scrolled_into_history() {
+        // 화면 5줄에 30줄을 흘려 앞부분을 스크롤백으로 밀어낸다.
+        let mut t = term(40, 5, 100);
+        feed(&mut t, "needle at the top\r\n");
+        for i in 0..30 {
+            feed(&mut t, &format!("filler line {i}\r\n"));
+        }
+
+        assert!(t.grid().history_size() > 0, "히스토리로 밀려나야 한다");
+        let s = scan("needle", &t);
+        assert_eq!(s.matches.len(), 1, "스크롤백 안의 매치도 찾아야 한다");
+        assert_eq!(s.matches[0].start_line, 0, "맨 처음 줄 = 절대 0");
+    }
+
+    /// 이 기능의 핵심 설계 검증 — 매치를 절대 줄 번호로 저장하는 이유.
+    ///
+    /// 그리드 `Line`은 출력이 날 때마다 밀린다. 매치를 그리드 좌표로 캐시했다면
+    /// 새 출력 뒤에 하이라이트가 엉뚱한 줄로 어긋난다. 절대 좌표는 그대로여야 한다.
+    #[test]
+    fn absolute_line_survives_new_output_pushing_the_scrollback() {
+        let mut t = term(40, 5, 500);
+        feed(&mut t, "TARGET\r\n");
+        for i in 0..10 {
+            feed(&mut t, &format!("before {i}\r\n"));
+        }
+
+        let s = scan("TARGET", &t);
+        assert_eq!(s.matches.len(), 1);
+        let before = s.matches[0];
+        let history_before = t.grid().history_size() as i64;
+        // 매치가 가리키는 그리드 줄 (지금 시점)
+        let grid_line_before = before.start_line - history_before;
+
+        // 새 출력이 스크롤백을 민다 — 재스캔은 하지 않는다.
+        for i in 0..20 {
+            feed(&mut t, &format!("after {i}\r\n"));
+        }
+        let history_after = t.grid().history_size() as i64;
+        assert!(
+            history_after > history_before,
+            "히스토리가 늘어야 유효한 테스트"
+        );
+
+        // 그리드 좌표는 밀렸다 — 캐시했다면 하이라이트가 어긋났을 자리다.
+        let grid_line_after = before.start_line - history_after;
+        assert_ne!(
+            grid_line_before, grid_line_after,
+            "그리드 좌표가 밀리지 않았다면 이 테스트는 아무것도 증명하지 못한다"
+        );
+
+        // 진짜 검증: 새로 훑은 결과가 예전에 저장해둔 절대 줄과 같은가.
+        // 같다면 재스캔 없이 저장값을 계속 써도 하이라이트가 정확하다는 뜻이다.
+        let s2 = scan("TARGET", &t);
+        assert_eq!(s2.matches.len(), 1);
+        assert_eq!(
+            s2.matches[0], before,
+            "저장해둔 매치가 새 스캔 결과와 일치해야 한다"
+        );
+
+        // 그리고 현재 history로 변환하면 화면상 올바른 셀을 가리킨다.
+        let point = Point::new(Line(grid_line_after as i32), Column(0));
+        assert!(before.contains(point, history_after));
+    }
+
+    #[test]
+    fn contains_resolves_against_the_current_history() {
+        let mut t = term(40, 5, 500);
+        feed(&mut t, "MARK\r\n");
+        for i in 0..15 {
+            feed(&mut t, &format!("pad {i}\r\n"));
+        }
+
+        let s = scan("MARK", &t);
+        let m = s.matches[0];
+        let history = t.grid().history_size() as i64;
+
+        // 절대 0줄 → 현재 그리드에서는 Line(-history)
+        let point = Point::new(Line((m.start_line - history) as i32), Column(0));
+        assert!(
+            m.contains(point, history),
+            "현재 history로 변환하면 포함된다"
+        );
+
+        let off_by_one = Point::new(Line((m.start_line - history) as i32 + 1), Column(0));
+        assert!(
+            !m.contains(off_by_one, history),
+            "인접 줄은 포함되지 않는다"
+        );
+    }
+
+    #[test]
+    fn match_cap_bounds_a_pathological_query() {
+        let mut t = term(20, 5, 3000);
+        for _ in 0..1200 {
+            feed(&mut t, "x\r\n");
+        }
+        // 모든 줄에 매치되는 쿼리 — 상한에서 멈춰야 한다 (무한 루프도 안 된다).
+        let s = scan("x", &t);
+        assert_eq!(s.matches.len(), MAX_MATCHES);
+    }
 
     fn m(start_line: i64, start_col: usize, end_line: i64, end_col: usize) -> AbsMatch {
         AbsMatch {
