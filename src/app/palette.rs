@@ -2,8 +2,8 @@
 
 use winit::event_loop::ActiveEventLoop;
 
-use super::ai_bar::AiState;
 use super::App;
+use super::ai_bar::AiState;
 use crate::layout::SplitDir;
 
 /// 커맨드 팔레트 액션.

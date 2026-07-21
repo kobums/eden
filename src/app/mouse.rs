@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::viewport_to_point;
 use alacritty_terminal::term::TermMode;
+use alacritty_terminal::term::viewport_to_point;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 

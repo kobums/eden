@@ -19,7 +19,12 @@ impl App {
 
     pub(super) fn copy_selection(&mut self) {
         let Some(state) = &self.state else { return };
-        let text = state.focused_pane().session.term.lock().selection_to_string();
+        let text = state
+            .focused_pane()
+            .session
+            .term
+            .lock()
+            .selection_to_string();
         if let Some(text) = text {
             self.set_clipboard(text);
         }

@@ -131,7 +131,12 @@ impl Renderer {
 
                 let inv = 1.0 / ATLAS_SIZE as f32;
                 Some(Glyph {
-                    uv: [x as f32 * inv, y as f32 * inv, w as f32 * inv, h as f32 * inv],
+                    uv: [
+                        x as f32 * inv,
+                        y as f32 * inv,
+                        w as f32 * inv,
+                        h as f32 * inv,
+                    ],
                     size: [metrics.width as f32, metrics.height as f32],
                     offset: [
                         metrics.xmin as f32,

@@ -189,8 +189,7 @@ impl Renderer {
             .horizontal_line_metrics(ui_px)
             .expect("폰트 라인 메트릭 없음");
         let ui_ascent = ui_metrics.ascent;
-        let ui_line_height =
-            (ui_metrics.ascent - ui_metrics.descent + ui_metrics.line_gap).ceil();
+        let ui_line_height = (ui_metrics.ascent - ui_metrics.descent + ui_metrics.line_gap).ceil();
         let ui_advance = fonts[0].metrics('M', ui_px).advance_width;
 
         let atlas = Atlas::new(&device);
@@ -423,13 +422,24 @@ impl Renderer {
             }
         }
 
-        self.draw_tab_bar(tab_titles, active_tab, &mut bg_instances, &mut text_instances);
+        self.draw_tab_bar(
+            tab_titles,
+            active_tab,
+            &mut bg_instances,
+            &mut text_instances,
+        );
         // AI 바와 팔레트는 오버레이이므로 마지막에 (페인 위에) 그린다.
         if let Some(line) = ai_bar {
             ime_pos = Some(self.draw_ai_bar(line, &mut bg_instances, &mut text_instances));
         }
         if let Some((query, items, selected)) = palette {
-            self.draw_palette(query, items, selected, &mut bg_instances, &mut text_instances);
+            self.draw_palette(
+                query,
+                items,
+                selected,
+                &mut bg_instances,
+                &mut text_instances,
+            );
         }
         self.submit(&bg_instances, &text_instances);
         ime_pos
@@ -461,7 +471,12 @@ impl Renderer {
     /// 인스턴스를 업로드하고 프레임을 그린다.
     fn submit(&mut self, bg_instances: &[BgInstance], text_instances: &[TextInstance]) {
         let globals = Globals {
-            screen: [self.config.width as f32, self.config.height as f32, 0.0, 0.0],
+            screen: [
+                self.config.width as f32,
+                self.config.height as f32,
+                0.0,
+                0.0,
+            ],
         };
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));

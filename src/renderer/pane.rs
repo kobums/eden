@@ -5,7 +5,7 @@ use alacritty_terminal::term::cell::Flags;
 
 use super::color::ansi_to_rgb;
 use super::text::FontSize;
-use super::{BgInstance, PaneView, Renderer, TextInstance, PADDING};
+use super::{BgInstance, PADDING, PaneView, Renderer, TextInstance};
 
 /// 블록 상태 바 색: 실행 중 / 성공 / 실패
 const BLOCK_RUNNING: [f32; 3] = [0.35, 0.55, 0.95];
@@ -99,14 +99,17 @@ impl Renderer {
                 && preedit.is_none()
                 && indexed.point == cursor_point;
             // 블록 커서만 셀을 반전한다. 바/밑줄은 루프 뒤에서 사각형으로 그린다.
-            let block_cursor =
-                is_cursor && theme.cursor_style == crate::config::CursorStyle::Block;
+            let block_cursor = is_cursor && theme.cursor_style == crate::config::CursorStyle::Block;
             if block_cursor {
                 bg = theme.cursor;
                 fg = theme.bg;
             }
 
-            let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
+            let width_cells = if flags.contains(Flags::WIDE_CHAR) {
+                2.0
+            } else {
+                1.0
+            };
             if block_cursor || selected || bg != theme.bg {
                 bg_instances.push(BgInstance {
                     rect: [x, y, self.cell_width * width_cells, self.cell_height],

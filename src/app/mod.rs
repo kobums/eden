@@ -99,7 +99,9 @@ impl State {
     /// 탭의 모든 페인 세션 크기를 현재 배치에 맞춘다.
     fn relayout_tab(&self, tab_index: usize) {
         let mut rects = Vec::new();
-        self.tabs[tab_index].root.layout(self.content_rect(), &mut rects);
+        self.tabs[tab_index]
+            .root
+            .layout(self.content_rect(), &mut rects);
         for (id, rect) in rects {
             if let Some(pane) = self.tabs[tab_index].root.pane(id) {
                 pane.session.resize(self.window_size(rect));
@@ -232,7 +234,11 @@ impl App {
 
         let state = self.state.as_mut().unwrap();
         let active = state.active;
-        if state.tabs[active].root.split_leaf(target, dir, pane).is_none() {
+        if state.tabs[active]
+            .root
+            .split_leaf(target, dir, pane)
+            .is_none()
+        {
             state.tabs[active].focused = new_id;
             state.relayout_tab(active);
             self.preedit = None;
@@ -273,8 +279,7 @@ impl App {
         } else {
             state.tabs[tab_index].root.remove(pane_id);
             if state.tabs[tab_index].focused == pane_id {
-                state.tabs[tab_index].focused =
-                    state.tabs[tab_index].root.first_id().unwrap_or(0);
+                state.tabs[tab_index].focused = state.tabs[tab_index].root.first_id().unwrap_or(0);
             }
             state.relayout_tab(tab_index);
         }
@@ -450,10 +455,12 @@ impl ApplicationHandler<AppEvent> for App {
 
         // 상태바(시계·CPU·메모리) 갱신용 1초 틱.
         let proxy = self.proxy.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            if proxy.send_event(AppEvent::Tick).is_err() {
-                break; // 앱 종료
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if proxy.send_event(AppEvent::Tick).is_err() {
+                    break; // 앱 종료
+                }
             }
         });
     }
@@ -536,12 +543,7 @@ impl App {
     }
 
     /// 세션(PTY)에서 올라온 터미널 이벤트를 처리한다.
-    fn on_term_event(
-        &mut self,
-        pane_id: usize,
-        event: TermEvent,
-        event_loop: &ActiveEventLoop,
-    ) {
+    fn on_term_event(&mut self, pane_id: usize, event: TermEvent, event_loop: &ActiveEventLoop) {
         let state = self.state.as_mut().unwrap();
         let Some(tab_index) = state
             .tabs
