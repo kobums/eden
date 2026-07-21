@@ -140,6 +140,8 @@ impl App {
             Key::Character("d") if mods.shift_key() => self.split_pane(SplitDir::Column),
             Key::Character("D") => self.split_pane(SplitDir::Column),
             Key::Character("d") => self.split_pane(SplitDir::Row),
+            // 페인 줌 (tmux의 prefix+z)
+            Key::Character("z") | Key::Character("Z") => self.toggle_zoom(),
             // 복사/붙여넣기
             Key::Character("c") if mods.shift_key() => self.copy_last_output(),
             Key::Character("C") => self.copy_last_output(),

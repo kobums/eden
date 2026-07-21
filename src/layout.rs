@@ -99,6 +99,20 @@ impl<P: PaneId> PaneNode<P> {
         }
     }
 
+    /// 줌을 반영한 배치. 줌 중이면 `focused` 페인 하나가 전체를 차지한다.
+    ///
+    /// 트리 자체는 건드리지 않으므로 줌을 풀면 원래 구조가 그대로 돌아온다.
+    /// `focused`가 트리에 없으면(경합으로 이미 닫힌 경우) 줌을 무시하고
+    /// 정상 배치로 떨어진다 — 아무것도 그리지 않는 것보다 낫다.
+    pub fn layout_zoomed(&self, rect: Rect, focused: usize, zoomed: bool) -> Vec<(usize, Rect)> {
+        if zoomed && self.pane(focused).is_some() {
+            return vec![(focused, rect)];
+        }
+        let mut out = Vec::new();
+        self.layout(rect, &mut out);
+        out
+    }
+
     pub fn panes(&self) -> Vec<&P> {
         let mut out = Vec::new();
         self.collect(&mut out);
@@ -295,6 +309,66 @@ mod tests {
         assert!(p2.y < p3.y, "2가 3 위에");
         assert_eq!(p1.h, 600.0, "좌측 페인은 전체 높이");
         assert!(p1.x + p1.w <= p2.x, "좌우가 겹치지 않음");
+    }
+
+    #[test]
+    fn zoom_gives_the_focused_pane_the_whole_rect() {
+        let tree = split(
+            SplitDir::Row,
+            leaf(1),
+            split(SplitDir::Column, leaf(2), leaf(3)),
+        );
+        let full = rect(0.0, 0.0, 800.0, 600.0);
+
+        let out = tree.layout_zoomed(full, 2, true);
+        assert_eq!(out.len(), 1, "줌 중에는 한 페인만 배치된다");
+        assert_eq!(out[0].0, 2, "포커스된 페인이어야 한다");
+        assert_eq!((out[0].1.w, out[0].1.h), (800.0, 600.0), "전체를 차지");
+        assert_eq!((out[0].1.x, out[0].1.y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn unzoom_restores_the_original_split_exactly() {
+        let tree = split(
+            SplitDir::Row,
+            leaf(1),
+            split(SplitDir::Column, leaf(2), leaf(3)),
+        );
+        let full = rect(0.0, 0.0, 800.0, 600.0);
+
+        let before = tree.layout_zoomed(full, 2, false);
+        let _zoomed = tree.layout_zoomed(full, 2, true);
+        let after = tree.layout_zoomed(full, 2, false);
+
+        // 트리를 건드리지 않으므로 줌 전후 배치가 완전히 같아야 한다.
+        assert_eq!(before.len(), 3);
+        assert_eq!(after.len(), 3);
+        for (b, a) in before.iter().zip(after.iter()) {
+            assert_eq!(b.0, a.0);
+            assert_eq!((b.1.x, b.1.y, b.1.w, b.1.h), (a.1.x, a.1.y, a.1.w, a.1.h));
+        }
+    }
+
+    #[test]
+    fn zoom_falls_back_when_the_focused_pane_is_gone() {
+        // focused가 트리에 없으면(이미 닫힌 페인) 줌을 무시한다 —
+        // 그러지 않으면 존재하지 않는 페인 하나만 배치돼 화면이 빈다.
+        let tree = split(SplitDir::Row, leaf(1), leaf(2));
+        let out = tree.layout_zoomed(rect(0.0, 0.0, 800.0, 600.0), 99, true);
+        assert_eq!(out.len(), 2, "정상 배치로 떨어진다");
+    }
+
+    #[test]
+    fn zoom_on_a_single_leaf_is_harmless() {
+        let tree = leaf(1);
+        let full = rect(0.0, 0.0, 800.0, 600.0);
+        let out = tree.layout_zoomed(full, 1, true);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            (out[0].1.w, out[0].1.h),
+            (800.0, 600.0),
+            "줌 안 한 것과 같다"
+        );
     }
 
     #[test]
