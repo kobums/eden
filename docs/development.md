@@ -96,6 +96,7 @@ private 함수까지 검증한다 (`tests/` 디렉터리는 쓰지 않는다).
 | `renderer/color.rs` | mix, 256색 인덱스, 파생 크롬 색의 명암 방향 |
 | `app/mouse_report.rs` | 버튼 코드·수정자 비트·SGR/X10/UTF-8 인코딩·셀 환산 |
 | `app/search.rs` | 절대↔그리드 좌표 변환, 매치 포함 판정, 순환 이동 |
+| `session.rs` | OSC 133 마크 파싱 (zsh·bash·fish 형식 호환) |
 
 `layout.rs`는 `PaneNode<P = Pane>`로 페이로드가 제네릭이다. `Pane`이 `Session`을
 소유해(→ mux 데몬 스폰) 테스트에서 만들 수 없기 때문이고, 테스트는
@@ -124,7 +125,7 @@ CI는 macOS 러너에서 위 셋과 빌드를 돌린다 ([.github/workflows/ci.y
 | 11 | 스크롤백 검색 (Cmd+F) |
 | T | 첫 단위 테스트 + GitHub Actions CI |
 | 12 | 페인 줌 (Cmd+Z) |
-| 13 | 구분선 드래그 리사이즈 + bash 셸 통합 |
+| 13 | 구분선 드래그 리사이즈 + bash 셸 통합 (fish는 자체 지원 확인) |
 
 ## 남은 작업
 

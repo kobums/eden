@@ -544,19 +544,31 @@ impl Osc133Scanner {
 }
 
 /// OSC 133 페이로드(`A`, `C`, `D;0` 등)를 마크로 기록한다.
-fn record_mark(term: &Term<EventProxy>, marks: &Marks, payload: &[u8]) {
-    let kind = match payload.first() {
-        Some(b'A') => MarkKind::PromptStart,
-        Some(b'C') => MarkKind::CommandStart,
+/// OSC 133 페이로드 → 마크 종류.
+///
+/// 셸마다 형식이 조금씩 다르다. 첫 글자로만 분기하므로 뒤에 붙는 파라미터는
+/// 무시된다 — 그래서 셋 다 그대로 동작한다:
+///   zsh/bash(자체 스크립트) `A` `C` `D;0`
+///   fish(자체 내장, 3.4+)    `A;click_events=1` `C;cmdline_url=ls` `D;1`
+fn parse_mark_kind(payload: &[u8]) -> Option<MarkKind> {
+    match payload.first() {
+        Some(b'A') => Some(MarkKind::PromptStart),
+        Some(b'C') => Some(MarkKind::CommandStart),
         Some(b'D') => {
             let exit = payload
                 .get(2..)
                 .and_then(|s| std::str::from_utf8(s).ok())
                 .and_then(|s| s.parse().ok());
-            MarkKind::CommandEnd(exit)
+            Some(MarkKind::CommandEnd(exit))
         }
         // B(프롬프트 끝) 등은 아직 사용하지 않음
-        _ => return,
+        _ => None,
+    }
+}
+
+fn record_mark(term: &Term<EventProxy>, marks: &Marks, payload: &[u8]) {
+    let Some(kind) = parse_mark_kind(payload) else {
+        return;
     };
 
     let grid = term.grid();
@@ -594,4 +606,52 @@ fn longest_prefix_suffix(data: &[u8], pattern: &[u8]) -> usize {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zsh_and_bash_marks() {
+        // 우리 통합 스크립트가 내보내는 형식.
+        assert_eq!(parse_mark_kind(b"A"), Some(MarkKind::PromptStart));
+        assert_eq!(parse_mark_kind(b"C"), Some(MarkKind::CommandStart));
+        assert_eq!(parse_mark_kind(b"D;0"), Some(MarkKind::CommandEnd(Some(0))));
+        assert_eq!(
+            parse_mark_kind(b"D;130"),
+            Some(MarkKind::CommandEnd(Some(130))),
+            "여러 자리 종료 코드 (Ctrl+C 등)"
+        );
+    }
+
+    #[test]
+    fn fish_marks_with_parameters() {
+        // fish 3.4+가 자체적으로 내보내는 형식 — 파라미터가 붙는다.
+        // 실측값(fish 4.8.1)이다.
+        assert_eq!(
+            parse_mark_kind(b"A;click_events=1"),
+            Some(MarkKind::PromptStart)
+        );
+        assert_eq!(
+            parse_mark_kind(b"C;cmdline_url=false"),
+            Some(MarkKind::CommandStart)
+        );
+        assert_eq!(parse_mark_kind(b"D;1"), Some(MarkKind::CommandEnd(Some(1))));
+    }
+
+    #[test]
+    fn prompt_end_and_unknown_marks_are_ignored() {
+        assert_eq!(parse_mark_kind(b"B"), None, "B는 아직 쓰지 않는다");
+        assert_eq!(parse_mark_kind(b"X"), None);
+        assert_eq!(parse_mark_kind(b""), None);
+    }
+
+    #[test]
+    fn missing_or_malformed_exit_code_becomes_none() {
+        // 종료 코드가 없거나 숫자가 아니면 "실행 중"이 아니라 "코드 모름"이다.
+        assert_eq!(parse_mark_kind(b"D"), Some(MarkKind::CommandEnd(None)));
+        assert_eq!(parse_mark_kind(b"D;"), Some(MarkKind::CommandEnd(None)));
+        assert_eq!(parse_mark_kind(b"D;abc"), Some(MarkKind::CommandEnd(None)));
+    }
 }
