@@ -113,8 +113,7 @@ impl Session {
     /// mux 데몬에 새 세션을 만들어 붙는다.
     pub fn new(proxy: EventProxy, window_size: WindowSize, scrollback: usize) -> Self {
         let _ = mux::ensure_daemon();
-        let (client, read_stream) =
-            MuxClient::create(window_size).expect("mux 세션 생성 실패");
+        let (client, read_stream) = MuxClient::create(window_size).expect("mux 세션 생성 실패");
         Self::build(proxy, window_size, scrollback, client, read_stream)
     }
 
@@ -126,7 +125,13 @@ impl Session {
         scrollback: usize,
     ) -> Option<Self> {
         let (client, read_stream) = MuxClient::attach(id, window_size).ok()?;
-        Some(Self::build(proxy, window_size, scrollback, client, read_stream))
+        Some(Self::build(
+            proxy,
+            window_size,
+            scrollback,
+            client,
+            read_stream,
+        ))
     }
 
     /// 현재 살아있는 세션 ID 목록.
@@ -436,10 +441,7 @@ enum ScanState {
     #[default]
     Normal,
     /// OSC 133 본문 수집 중 (`ESC ] 133 ;` 이후, BEL 또는 ST까지)
-    Collect {
-        payload: Vec<u8>,
-        esc_seen: bool,
-    },
+    Collect { payload: Vec<u8>, esc_seen: bool },
 }
 
 #[derive(Default)]

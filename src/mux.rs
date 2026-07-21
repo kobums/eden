@@ -147,7 +147,9 @@ impl MuxClient {
         for i in 0..count {
             let off = 4 + i * 8;
             if off + 8 <= payload.len() {
-                ids.push(u64::from_le_bytes(payload[off..off + 8].try_into().unwrap()));
+                ids.push(u64::from_le_bytes(
+                    payload[off..off + 8].try_into().unwrap(),
+                ));
             }
         }
         Ok(ids)
@@ -288,7 +290,9 @@ fn handle_connection(mut stream: UnixStream, registry: Registry, next_id: Arc<At
             let _ = write_frame(&mut stream, SESSION_LIST, &out);
         }
         CREATE => {
-            let Some(ws) = decode_size(&payload) else { return };
+            let Some(ws) = decode_size(&payload) else {
+                return;
+            };
             let id = next_id.fetch_add(1, Ordering::SeqCst);
             let session = spawn_session(ws, id, Arc::clone(&registry));
             registry.lock().unwrap().insert(id, Arc::clone(&session));
@@ -321,9 +325,7 @@ fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<Daemo
     // 셸 통합(OSC 133) 주입 — 클라이언트가 스캔한다
     if let Some(shell_dir) = install_shell_integration() {
         if let Ok(orig) = std::env::var("ZDOTDIR") {
-            options
-                .env
-                .insert("TERMDEV_ORIG_ZDOTDIR".to_string(), orig);
+            options.env.insert("TERMDEV_ORIG_ZDOTDIR".to_string(), orig);
         }
         options.env.insert(
             "TERMDEV_INTEGRATION".to_string(),

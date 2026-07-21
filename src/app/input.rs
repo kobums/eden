@@ -7,9 +7,9 @@ use winit::event::{ElementState, Ime, KeyEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use super::App;
 use super::ai_bar::AiState;
 use super::palette::Palette;
-use super::App;
 use crate::layout::{Pane, SplitDir};
 
 impl App {
@@ -26,7 +26,12 @@ impl App {
         let typing = !mods.control_key() && !mods.super_key();
 
         // 오버레이가 열려 있으면 키를 가로챈다.
-        if self.palette_key(&event.logical_key, event.text.as_deref(), typing, event_loop) {
+        if self.palette_key(
+            &event.logical_key,
+            event.text.as_deref(),
+            typing,
+            event_loop,
+        ) {
             return;
         }
         if self.ai_bar_key(&event.logical_key, event.text.as_deref(), typing) {
