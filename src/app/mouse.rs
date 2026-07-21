@@ -16,7 +16,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
 use super::mouse_report::{self, ReportKind};
 use super::{App, State};
-use crate::layout::{Pane, Rect};
+use crate::layout::{Divider, Pane, Rect, SplitDir};
 use crate::renderer::PADDING;
 
 /// 더블/트리플 클릭 판정 간격.
@@ -83,6 +83,50 @@ impl App {
         }
     }
 
+    /// 좌표 아래에 있는 구분선. 줌 중에는 구분선이 없다.
+    fn divider_at(state: &State, pos: PhysicalPosition<f64>) -> Option<Divider> {
+        let tab = state.active_tab();
+        if tab.zoomed {
+            return None;
+        }
+        tab.root
+            .dividers(state.content_rect())
+            .into_iter()
+            .find(|d| d.rect.contains(pos.x, pos.y))
+    }
+
+    /// 드래그 중인 구분선을 마우스 위치에 맞춰 옮긴다.
+    fn drag_divider(&mut self, pos: PhysicalPosition<f64>) {
+        let Some(path) = self.dragging_divider.clone() else {
+            return;
+        };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        let content = state.content_rect();
+        let active = state.active;
+
+        // 이 Split이 차지하는 영역을 다시 찾아 마우스 위치를 비율로 환산한다.
+        let Some(divider) = state.tabs[active]
+            .root
+            .dividers(content)
+            .into_iter()
+            .find(|d| d.path == path)
+        else {
+            self.dragging_divider = None;
+            return;
+        };
+
+        let b = divider.bounds;
+        let ratio = match divider.dir {
+            SplitDir::Row => (pos.x as f32 - b.x) / b.w,
+            SplitDir::Column => (pos.y as f32 - b.y) / b.h,
+        };
+        state.tabs[active].root.set_ratio(&path, ratio);
+        state.relayout_tab(active);
+        state.window.request_redraw();
+    }
+
     /// 마우스 리포팅이 켜져 있고 사용자가 로컬 동작을 요구하지 않았는지.
     ///
     /// Shift는 표준 탈출구다 — htop 같은 전체화면 앱에서 텍스트를 선택할
@@ -117,6 +161,12 @@ impl App {
 
     pub(super) fn on_cursor_moved(&mut self, position: PhysicalPosition<f64>) {
         self.mouse_pos = position;
+
+        // 구분선 드래그가 최우선 — 선택도 리포팅도 끼어들면 안 된다.
+        if self.dragging_divider.is_some() {
+            self.drag_divider(position);
+            return;
+        }
 
         let state = self.state.as_ref().unwrap();
         let Some((pane, rect)) = Self::focused_pane_rect(state) else {
@@ -166,6 +216,12 @@ impl App {
                     return;
                 }
 
+                // 구분선 위에서 눌렀으면 드래그 시작 — 페인 포커스보다 먼저 본다.
+                if let Some(divider) = Self::divider_at(state, self.mouse_pos) {
+                    self.dragging_divider = Some(divider.path);
+                    return;
+                }
+
                 // 페인 클릭 → 포커스 이동.
                 // 리포팅보다 먼저 해야 비포커스 페인 클릭이 엉뚱한 세션으로 가지 않는다.
                 let state = self.state.as_mut().unwrap();
@@ -187,6 +243,12 @@ impl App {
                     return;
                 }
             }
+        }
+
+        // 구분선 드래그 종료. 리사이즈 중 뗀 것이므로 선택 로직으로 흘리지 않는다.
+        if button_state == ElementState::Released && self.dragging_divider.is_some() {
+            self.dragging_divider = None;
+            return;
         }
 
         let state = self.state.as_ref().unwrap();

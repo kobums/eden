@@ -91,7 +91,7 @@ private 함수까지 검증한다 (`tests/` 디렉터리는 쓰지 않는다).
 
 | 대상 | 내용 |
 |---|---|
-| `layout.rs` | 분할 트리: 배치 계산·GAP 정합성·split/remove·경계·줌 |
+| `layout.rs` | 분할 트리: 배치·GAP 정합성·split/remove·경계·줌·비율/구분선 |
 | `config.rs` | `key = value` 파서, 범위 검사, 프리셋 순서 의존성 |
 | `renderer/color.rs` | mix, 256색 인덱스, 파생 크롬 색의 명암 방향 |
 | `app/mouse_report.rs` | 버튼 코드·수정자 비트·SGR/X10/UTF-8 인코딩·셀 환산 |
@@ -124,6 +124,7 @@ CI는 macOS 러너에서 위 셋과 빌드를 돌린다 ([.github/workflows/ci.y
 | 11 | 스크롤백 검색 (Cmd+F) |
 | T | 첫 단위 테스트 + GitHub Actions CI |
 | 12 | 페인 줌 (Cmd+Z) |
+| 13 | 구분선 드래그 리사이즈 + bash 셸 통합 |
 
 ## 남은 작업
 
