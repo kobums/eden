@@ -121,7 +121,7 @@ impl MuxClient {
     fn finish_attach(mut stream: UnixStream) -> io::Result<(Self, UnixStream)> {
         let (tag, payload) = read_frame(&mut stream)?;
         if tag != ATTACHED || payload.len() < 8 {
-            return Err(io::Error::new(io::ErrorKind::Other, "attach 실패"));
+            return Err(io::Error::other("attach 실패"));
         }
         let id = u64::from_le_bytes(payload[..8].try_into().unwrap());
         let writer = stream.try_clone()?;
@@ -434,10 +434,10 @@ fn serve_subscriber(stream: UnixStream, id: u64, session: Arc<Mutex<DaemonSessio
     loop {
         match read_frame(&mut in_stream) {
             Ok((INPUT, data)) => {
-                if let Some(f) = write_file.as_mut() {
-                    if f.write_all(&data).is_err() {
-                        break;
-                    }
+                if let Some(f) = write_file.as_mut()
+                    && f.write_all(&data).is_err()
+                {
+                    break;
                 }
             }
             Ok((RESIZE, payload)) => {

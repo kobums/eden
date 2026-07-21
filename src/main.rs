@@ -4,6 +4,11 @@
 //! 뜨는 mux 데몬이 소유한다 (창을 닫아도 세션이 살아남는 구조).
 //! 자세한 구조는 `docs/architecture.md` 참고.
 
+// 그리기 프리미티브와 좌표 변환은 위치·크기·색처럼 함께 다니는 스칼라를
+// 여러 개 받는다 (`draw_text`, `draw_block_gutter`, `cell_at`). 린트를 맞추려고
+// 구조체로 묶으면 호출부가 더 장황해지므로 그대로 둔다.
+#![allow(clippy::too_many_arguments)]
+
 mod ai;
 mod app;
 mod config;

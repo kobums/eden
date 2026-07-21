@@ -225,18 +225,18 @@ impl Session {
                     exit: None,
                 }),
                 MarkKind::CommandStart => {
-                    if let Some(block) = blocks.last_mut() {
-                        if block.cmd_abs.is_none() {
-                            block.cmd_abs = Some(mark.abs_line);
-                        }
+                    if let Some(block) = blocks.last_mut()
+                        && block.cmd_abs.is_none()
+                    {
+                        block.cmd_abs = Some(mark.abs_line);
                     }
                 }
                 MarkKind::CommandEnd(exit) => {
-                    if let Some(block) = blocks.last_mut() {
-                        if block.end_abs.is_none() {
-                            block.end_abs = Some(mark.abs_line);
-                            block.exit = exit;
-                        }
+                    if let Some(block) = blocks.last_mut()
+                        && block.end_abs.is_none()
+                    {
+                        block.end_abs = Some(mark.abs_line);
+                        block.exit = exit;
                     }
                 }
             }
@@ -563,10 +563,11 @@ fn record_mark(term: &Term<EventProxy>, marks: &Marks, payload: &[u8]) {
     let abs_line = grid.history_size() as i64 + grid.cursor.point.line.0 as i64;
     let mut marks = marks.lock().unwrap();
     // 같은 줄에 같은 종류가 중복 기록되는 것(프롬프트 다시 그리기 등)은 무시
-    if let Some(last) = marks.last() {
-        if last.kind == kind && last.abs_line == abs_line {
-            return;
-        }
+    if let Some(last) = marks.last()
+        && last.kind == kind
+        && last.abs_line == abs_line
+    {
+        return;
     }
     marks.push(Mark { kind, abs_line });
 

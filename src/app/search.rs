@@ -302,13 +302,11 @@ impl App {
             _ => {}
         }
 
-        if typing_allowed {
-            if let (Some(search), Some(text)) = (&mut self.search, text) {
-                // 제어 문자는 넣지 않는다 (Tab 등이 쿼리에 섞이면 정규식이 깨진다).
-                if !text.is_empty() && !text.chars().any(char::is_control) {
-                    search.query.push_str(text);
-                    self.rescan_search();
-                }
+        if typing_allowed && let (Some(search), Some(text)) = (&mut self.search, text) {
+            // 제어 문자는 넣지 않는다 (Tab 등이 쿼리에 섞이면 정규식이 깨진다).
+            if !text.is_empty() && !text.chars().any(char::is_control) {
+                search.query.push_str(text);
+                self.rescan_search();
             }
         }
         if let Some(state) = &self.state {

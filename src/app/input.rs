@@ -76,10 +76,9 @@ impl App {
                 }
             }
             _ => {
-                if typing_allowed {
-                    if let (AiState::Input(buffer), Some(text)) = (&mut self.ai, text) {
-                        buffer.push_str(text);
-                    }
+                if typing_allowed && let (AiState::Input(buffer), Some(text)) = (&mut self.ai, text)
+                {
+                    buffer.push_str(text);
                 }
             }
         }
@@ -217,12 +216,12 @@ fn key_to_bytes(event: &KeyEvent, mods: ModifiersState) -> Option<Vec<u8>> {
     }
 
     // Ctrl+A..Z → C0 제어 문자
-    if mods.control_key() {
-        if let Key::Character(s) = &event.logical_key {
-            let c = s.chars().next()?.to_ascii_lowercase();
-            if c.is_ascii_lowercase() {
-                return Some(vec![c as u8 - b'a' + 1]);
-            }
+    if mods.control_key()
+        && let Key::Character(s) = &event.logical_key
+    {
+        let c = s.chars().next()?.to_ascii_lowercase();
+        if c.is_ascii_lowercase() {
+            return Some(vec![c as u8 - b'a' + 1]);
         }
     }
 

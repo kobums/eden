@@ -129,11 +129,9 @@ impl App {
                 }
             }
             _ => {
-                if typing_allowed {
-                    if let (Some(p), Some(text)) = (&mut self.palette, text) {
-                        p.query.push_str(text);
-                        p.selected = 0;
-                    }
+                if typing_allowed && let (Some(p), Some(text)) = (&mut self.palette, text) {
+                    p.query.push_str(text);
+                    p.selected = 0;
                 }
             }
         }

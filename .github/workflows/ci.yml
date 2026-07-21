@@ -25,11 +25,8 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      # 이 리포는 린트를 처음 도입한다. 우선 advisory로 두고,
-      # 사소한 린트를 정리한 뒤 후속 커밋에서 -D warnings로 전환한다.
-      - name: Clippy (advisory)
-        run: cargo clippy --all-targets --all-features
-        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build
         run: cargo build --locked
