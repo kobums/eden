@@ -43,7 +43,7 @@ Term은 GUI 쪽에 남기 때문에 선택·스크롤·블록·AI 등 모든 기
 | `renderer/` | wgpu 렌더러 — glyph atlas, 셀 배경/글리프 2패스, 크롬, 오버레이 |
 | `session.rs` | 페인 세션 — Term + OSC 133 스캐너 + 블록 도출 + mux 클라이언트 |
 | `mux.rs` | mux 데몬 + 클라이언트 + 프레임 프로토콜 (세션 지속성) |
-| `layout.rs` | 페인 이진 분할 트리 (분할/제거/배치 계산) |
+| `layout.rs` | 페인 이진 분할 트리 (분할/제거/배치 계산·줌) |
 | `config.rs` | 설정 파일 파서 (`key = value`) |
 | `ai.rs` | 자연어 → 셸 명령 생성 (Anthropic BYOK / 로컬 Ollama) |
 

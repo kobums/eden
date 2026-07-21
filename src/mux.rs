@@ -477,6 +477,12 @@ fn trim_replay(replay: &mut Vec<u8>) {
 }
 
 /// 셸 통합 스크립트를 캐시 디렉터리에 설치한다 (session.rs와 동일 경로).
+///
+/// zsh만 자동 주입된다(ZDOTDIR 우회). bash용 스크립트도 함께 깔지만 부르지는
+/// 않는다 — bash에는 안전한 주입 지점이 없기 때문이다. 로그인 셸은 `--rcfile`을
+/// 무시하고, `--rcfile`을 쓰려고 로그인 셸을 포기하면 `/etc/profile`
+/// (path_helper)을 건너뛰어 PATH가 조용히 달라진다. 사용자가 직접 한 줄
+/// 추가하는 쪽이 정직하다 (docs/features.md 참고).
 fn install_shell_integration() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let dir = PathBuf::from(home).join(".cache/terminal-dev/shell");
@@ -485,6 +491,12 @@ fn install_shell_integration() -> Option<PathBuf> {
     std::fs::write(
         dir.join("integration.zsh"),
         include_str!("../shell/integration.zsh"),
+    )
+    .ok()?;
+    // bash는 자동 주입하지 않지만, 사용자가 source할 수 있게 같이 깔아둔다.
+    std::fs::write(
+        dir.join("integration.bash"),
+        include_str!("../shell/integration.bash"),
     )
     .ok()?;
     Some(dir)
