@@ -72,13 +72,18 @@ impl Default for Config {
 impl Config {
     /// 설정 파일을 읽어 파싱한다. 없으면 기본값.
     pub fn load() -> Self {
-        let mut config = Config::default();
         let Some(path) = config_path() else {
-            return config;
+            return Config::default();
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
-            return config;
+            return Config::default();
         };
+        Config::parse(&text)
+    }
+
+    /// 설정 텍스트를 파싱한다. 파일 IO와 분리돼 있어 단위 테스트 가능하다.
+    pub fn parse(text: &str) -> Self {
+        let mut config = Config::default();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -222,4 +227,148 @@ fn parse_hex(s: &str) -> Option<[f32; 3]> {
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
     Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_accepts_both_prefixed_and_bare() {
+        assert_eq!(parse_hex("#000000"), Some([0.0, 0.0, 0.0]));
+        assert_eq!(parse_hex("ffffff"), Some([1.0, 1.0, 1.0]));
+        let c = parse_hex("#ff8000").unwrap();
+        assert_eq!(c[0], 1.0);
+        assert!((c[1] - 128.0 / 255.0).abs() < 1e-6);
+        assert_eq!(c[2], 0.0);
+    }
+
+    #[test]
+    fn parse_hex_rejects_bad_input() {
+        assert_eq!(parse_hex("#12345"), None, "5자리");
+        assert_eq!(parse_hex("1234567"), None, "7자리");
+        assert_eq!(parse_hex("zzzzzz"), None, "16진수 아님");
+        assert_eq!(parse_hex(""), None);
+    }
+
+    #[test]
+    fn empty_input_yields_defaults() {
+        let c = Config::parse("");
+        let d = Config::default();
+        assert_eq!(c.font_size, d.font_size);
+        assert_eq!(c.scrollback, d.scrollback);
+        assert_eq!(c.background, d.background);
+    }
+
+    #[test]
+    fn font_size_is_range_checked() {
+        assert_eq!(Config::parse("font-size = 18").font_size, 18.0);
+        assert_eq!(Config::parse("font-size = 6").font_size, 6.0, "하한 포함");
+        assert_eq!(Config::parse("font-size = 72").font_size, 72.0, "상한 포함");
+
+        let default = Config::default().font_size;
+        assert_eq!(
+            Config::parse("font-size = 3").font_size,
+            default,
+            "너무 작음"
+        );
+        assert_eq!(
+            Config::parse("font-size = 200").font_size,
+            default,
+            "너무 큼"
+        );
+        assert_eq!(Config::parse("font-size = abc").font_size, default);
+    }
+
+    #[test]
+    fn background_opacity_is_range_checked() {
+        assert_eq!(
+            Config::parse("background-opacity = 0.5").background_opacity,
+            0.5
+        );
+        assert_eq!(
+            Config::parse("background-opacity = 0.2").background_opacity,
+            0.2
+        );
+
+        let default = Config::default().background_opacity;
+        assert_eq!(
+            Config::parse("background-opacity = 0.1").background_opacity,
+            default,
+            "0.2 미만은 거부 — 창이 사실상 안 보이게 된다"
+        );
+        assert_eq!(
+            Config::parse("background-opacity = 1.5").background_opacity,
+            default
+        );
+    }
+
+    #[test]
+    fn scrollback_clamps_at_one_million() {
+        assert_eq!(Config::parse("scrollback = 500").scrollback, 500);
+        assert_eq!(Config::parse("scrollback = 99999999").scrollback, 1_000_000);
+    }
+
+    #[test]
+    fn palette_index_is_bounds_checked() {
+        let c = Config::parse("palette-3 = #ff0000");
+        assert_eq!(c.palette[3], [1.0, 0.0, 0.0]);
+
+        // 16 이상은 무시 — 배열이 16칸이라 패닉을 막아야 한다.
+        let c = Config::parse("palette-16 = #ff0000");
+        assert_eq!(c.palette, DEFAULT_PALETTE);
+        let c = Config::parse("palette-999 = #ff0000");
+        assert_eq!(c.palette, DEFAULT_PALETTE);
+        let c = Config::parse("palette-abc = #ff0000");
+        assert_eq!(c.palette, DEFAULT_PALETTE);
+    }
+
+    #[test]
+    fn cursor_style_falls_back_to_block() {
+        assert!(Config::parse("cursor-style = bar").cursor_style == CursorStyle::Bar);
+        assert!(Config::parse("cursor-style = beam").cursor_style == CursorStyle::Bar);
+        assert!(Config::parse("cursor-style = BEAM").cursor_style == CursorStyle::Bar);
+        assert!(Config::parse("cursor-style = underline").cursor_style == CursorStyle::Underline);
+        assert!(Config::parse("cursor-style = nonsense").cursor_style == CursorStyle::Block);
+    }
+
+    #[test]
+    fn comments_blanks_and_malformed_lines_are_skipped() {
+        let c = Config::parse(
+            "\
+# 주석
+   # 들여쓴 주석
+
+font-size = 20
+= 값만 있는 줄
+키만 있는 줄
+  scrollback   =   777
+",
+        );
+        assert_eq!(c.font_size, 20.0);
+        assert_eq!(c.scrollback, 777, "키·값 주변 공백은 trim");
+    }
+
+    #[test]
+    fn unknown_keys_are_ignored() {
+        let c = Config::parse("nonexistent-key = whatever\nfont-size = 16");
+        assert_eq!(c.font_size, 16.0);
+    }
+
+    #[test]
+    fn explicit_color_overrides_a_preset_declared_before_it() {
+        // 순서 의존적이다: theme이 먼저 오면 뒤의 개별 키가 이긴다.
+        let c = Config::parse("theme = guezwhoz\nbackground = #000000");
+        assert_eq!(c.background, [0.0, 0.0, 0.0]);
+
+        // 반대 순서면 프리셋이 덮어쓴다 — 문서화된 실제 동작.
+        let c = Config::parse("background = #000000\ntheme = guezwhoz");
+        assert_eq!(c.background, parse_hex("#1d1d1d").unwrap());
+    }
+
+    #[test]
+    fn unknown_preset_leaves_defaults_alone() {
+        let c = Config::parse("theme = nonexistent");
+        assert_eq!(c.background, Config::default().background);
+    }
 }
