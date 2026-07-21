@@ -32,7 +32,10 @@ pub struct PaneView<'a> {
 }
 
 /// 페인 가장자리 여백 (물리 픽셀). 왼쪽 여백은 블록 상태 바 거터로도 쓴다.
-const PADDING: f32 = 8.0;
+///
+/// 마우스 좌표를 셀로 환산할 때도 같은 값이 필요하므로 크레이트에 공개한다
+/// (예전에는 `app::mouse`가 같은 값을 따로 들고 있어 어긋날 수 있었다).
+pub(crate) const PADDING: f32 = 8.0;
 
 /// macOS 시스템 고정폭 폰트 후보 (앞에서부터 시도, 첫 성공이 주 폰트).
 const FONT_CANDIDATES: &[&str] = &[

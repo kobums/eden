@@ -13,6 +13,7 @@ mod ai_bar;
 mod clipboard;
 mod input;
 mod mouse;
+mod mouse_report;
 mod palette;
 mod quake;
 mod status;
@@ -135,6 +136,11 @@ pub struct App {
     last_click_point: Option<Point>,
     click_count: u32,
     scroll_accum: f32,
+    /// 마우스 리포팅 중 눌려 있는 버튼 (드래그 리포트 1002의 조건).
+    held_button: Option<winit::event::MouseButton>,
+    /// 마지막으로 리포트한 셀. 같은 셀 안의 픽셀 이동은 보내지 않는다 —
+    /// 1003 모드에서 중복 제거 없이 보내면 mux 소켓이 포화된다.
+    last_report_cell: Option<(usize, usize)>,
 
     // IME 조합 중 문자열 (포커스된 페인에 적용)
     preedit: Option<String>,
@@ -161,6 +167,8 @@ impl App {
             last_click_point: None,
             click_count: 0,
             scroll_accum: 0.0,
+            held_button: None,
+            last_report_cell: None,
             preedit: None,
         }
     }
