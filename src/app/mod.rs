@@ -163,6 +163,8 @@ pub struct App {
     /// 마지막으로 리포트한 셀. 같은 셀 안의 픽셀 이동은 보내지 않는다 —
     /// 1003 모드에서 중복 제거 없이 보내면 mux 소켓이 포화된다.
     last_report_cell: Option<(usize, usize)>,
+    /// 드래그 중인 구분선의 경로. None이면 드래그 중이 아니다.
+    dragging_divider: Option<crate::layout::SplitPath>,
 
     // IME 조합 중 문자열 (포커스된 페인에 적용)
     preedit: Option<String>,
@@ -192,6 +194,7 @@ impl App {
             scroll_accum: 0.0,
             held_button: None,
             last_report_cell: None,
+            dragging_divider: None,
             preedit: None,
         }
     }
