@@ -273,10 +273,8 @@ impl App {
         };
 
         // 명시적 닫기: 데몬 세션 종료 (다음 실행에서 복원되지 않도록)
-        if kill {
-            if let Some(pane) = state.tabs[tab_index].root.pane(pane_id) {
-                pane.session.kill();
-            }
+        if kill && let Some(pane) = state.tabs[tab_index].root.pane(pane_id) {
+            pane.session.kill();
         }
 
         let is_last_pane = state.tabs[tab_index].root.panes().len() == 1;

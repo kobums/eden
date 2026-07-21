@@ -130,10 +130,10 @@ impl Config {
         match key {
             "theme" => self.apply_preset(value),
             "font-size" => {
-                if let Ok(v) = value.parse::<f32>() {
-                    if (6.0..=72.0).contains(&v) {
-                        self.font_size = v;
-                    }
+                if let Ok(v) = value.parse::<f32>()
+                    && (6.0..=72.0).contains(&v)
+                {
+                    self.font_size = v;
                 }
             }
             "font-path" => self.font_path = Some(value.to_string()),
@@ -170,20 +170,19 @@ impl Config {
                 };
             }
             "background-opacity" => {
-                if let Ok(v) = value.parse::<f32>() {
-                    if (0.2..=1.0).contains(&v) {
-                        self.background_opacity = v;
-                    }
+                if let Ok(v) = value.parse::<f32>()
+                    && (0.2..=1.0).contains(&v)
+                {
+                    self.background_opacity = v;
                 }
             }
             // palette-0 ~ palette-15: 16색 ANSI 팔레트
             _ if key.starts_with("palette-") => {
-                if let Ok(idx) = key["palette-".len()..].parse::<usize>() {
-                    if idx < 16 {
-                        if let Some(c) = parse_hex(value) {
-                            self.palette[idx] = c;
-                        }
-                    }
+                if let Ok(idx) = key["palette-".len()..].parse::<usize>()
+                    && idx < 16
+                    && let Some(c) = parse_hex(value)
+                {
+                    self.palette[idx] = c;
                 }
             }
             _ => {} // 알 수 없는 키 무시
