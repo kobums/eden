@@ -9,11 +9,11 @@ terminal-dev는 Rust + wgpu(Metal)로 만든 macOS 네이티브 터미널이다.
 ```
 ┌──────────────────────── GUI 프로세스 (terminal) ────────────────────────┐
 │                                                                          │
-│  winit 이벤트 루프 (main.rs, App)                                        │
+│  winit 이벤트 루프 (app/, App)                                           │
 │    ├─ 키/마우스/IME 입력 → 세션에 바이트 전송                            │
 │    ├─ 탭/페인 레이아웃 (layout.rs, 이진 분할 트리)                        │
 │    ├─ 커맨드 팔레트 · AI 바 · Quake 오버레이                             │
-│    └─ 렌더러 (renderer.rs, wgpu glyph atlas)                             │
+│    └─ 렌더러 (renderer/, wgpu glyph atlas)                               │
 │                                                                          │
 │  세션 (session.rs)  ──── 페인마다 하나 ────                              │
 │    ├─ Term (alacritty_terminal, 그리드/스크롤백)                         │
@@ -38,20 +38,44 @@ Term은 GUI 쪽에 남기 때문에 선택·스크롤·블록·AI 등 모든 기
 
 | 모듈 | 역할 |
 |---|---|
-| `main.rs` | winit 앱, 이벤트 루프, 탭/페인 관리, 입력 라우팅, 팔레트/AI/Quake |
-| `renderer.rs` | wgpu 렌더러 — glyph atlas, 셀 배경/글리프 2패스, 탭 바, 오버레이 |
+| `main.rs` | 진입점 — 데몬 분기, 이벤트 루프 생성 |
+| `app/` | winit 앱 — 창/탭/페인 상태, 이벤트 루프 배선, 입력 라우팅 |
+| `renderer/` | wgpu 렌더러 — glyph atlas, 셀 배경/글리프 2패스, 크롬, 오버레이 |
 | `session.rs` | 페인 세션 — Term + OSC 133 스캐너 + 블록 도출 + mux 클라이언트 |
 | `mux.rs` | mux 데몬 + 클라이언트 + 프레임 프로토콜 (세션 지속성) |
 | `layout.rs` | 페인 이진 분할 트리 (분할/제거/배치 계산) |
 | `config.rs` | 설정 파일 파서 (`key = value`) |
 | `ai.rs` | 자연어 → 셸 명령 생성 (Anthropic BYOK / 로컬 Ollama) |
 
+`app/`과 `renderer/`는 관심사별 하위 모듈로 나뉜다. 각 하위 모듈은 같은 타입
+(`App` / `Renderer`)에 대한 `impl` 블록을 하나씩 갖는다 — 상태는 한 곳에
+모아두고 동작만 파일별로 가른 구조다.
+
+| `app/` | 역할 |
+|---|---|
+| `mod.rs` | `App`·`State`·`Tab` 정의, 탭/페인 생성·분할·닫기, 재그리기, 이벤트 디스패치 |
+| `input.rs` | 키보드·IME → 앱 단축키 또는 PTY 바이트 (`key_to_bytes`) |
+| `mouse.rs` | 클릭·드래그 선택·더블/트리플 클릭·휠·Cmd+클릭 |
+| `clipboard.rs` | 선택 복사, 붙여넣기, 마지막 출력 복사 |
+| `palette.rs` | 커맨드 팔레트 액션 목록·필터·실행 |
+| `ai_bar.rs` | AI 바 상태, 컨텍스트 수집, 생성 결과 삽입 |
+| `quake.rs` | Ctrl+` 전역 핫키 등록과 드롭다운 토글 |
+| `status.rs` | 하단 상태바 문자열 (cwd·git 브랜치·CPU·메모리·시계) |
+
+| `renderer/` | 역할 |
+|---|---|
+| `mod.rs` | `Renderer` 정의, wgpu 초기화(파이프라인·버퍼), 프레임 조립과 제출 |
+| `text.rs` | glyph atlas(래스터라이즈·shelf packing·캐싱), 텍스트 한 줄 그리기·폭 계산·말줄임 |
+| `pane.rs` | 터미널 그리드 — 셀 배경/글리프, 커서, 블록 거터, IME preedit |
+| `chrome.rs` | 탭 바, 하단 상태바, AI 바, 팔레트 오버레이 |
+| `color.rs` | `Theme`, ANSI/256색 → RGB, 크롬 색 파생 |
+
 ## 데이터 흐름: 키 입력 → 화면
 
 ```
 키 입력 (winit)
-  → main.rs: key_to_bytes()  (KeyEvent → PTY 바이트)
-  → session.write()          → mux 클라이언트 → Unix 소켓
+  → app/input.rs: key_to_bytes()  (KeyEvent → PTY 바이트)
+  → session.write()               → mux 클라이언트 → Unix 소켓
   → mux 데몬: PTY master에 write → 셸이 처리
   → 셸 출력 → 데몬이 리플레이 버퍼에 축적 + 구독자에 전달
   → GUI mux-reader 스레드: OSC 133 스캐너 → alacritty 파서 → Term 그리드

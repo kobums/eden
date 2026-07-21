@@ -15,14 +15,28 @@ stable로 빌드된다.
 
 ```
 src/
-  main.rs       winit 앱, 이벤트 루프, 탭/페인, 입력 라우팅, 팔레트/AI/Quake
-  renderer.rs   wgpu glyph atlas 렌더러
+  main.rs       진입점 (데몬 분기 + 이벤트 루프 생성)
+  app/          winit 앱
+    mod.rs        App/State/Tab, 탭·페인 관리, 재그리기, 이벤트 디스패치
+    input.rs      키보드·IME → 단축키 또는 PTY 바이트
+    mouse.rs      클릭·선택·휠·Cmd+클릭
+    clipboard.rs  복사/붙여넣기
+    palette.rs    커맨드 팔레트
+    ai_bar.rs     AI 명령 생성 바
+    quake.rs      Ctrl+` 전역 드롭다운
+    status.rs     하단 상태바 문자열
+  renderer/     wgpu glyph atlas 렌더러
+    mod.rs        Renderer, wgpu 초기화, 프레임 조립·제출
+    text.rs       glyph atlas + 텍스트 한 줄 그리기·폭 계산
+    pane.rs       터미널 그리드 (셀·커서·블록 거터·preedit)
+    chrome.rs     탭 바·상태바·AI 바·팔레트
+    color.rs      테마와 ANSI 색 변환
+    shader.wgsl   배경/글리프 셰이더
   session.rs    페인 세션 (Term + OSC 133 + 블록 + mux 클라이언트)
   mux.rs        mux 데몬 + 클라이언트 (세션 지속성)
   layout.rs     페인 이진 분할 트리
   config.rs     설정 파서
   ai.rs         자연어 → 셸 명령
-  shader.wgsl   배경/글리프 셰이더
 shell/
   integration.zsh   OSC 133 셸 통합
   zshenv            ZDOTDIR 부트스트랩 주입
@@ -89,7 +103,9 @@ open dist/terminal-dev.app
 - **Kitty graphics protocol** — APC 파싱 + 이미지 디코드 + 별도 GPU 텍스처
   아틀라스/배치 서브시스템 필요.
 - 코드 서명 · 공증.
-- 설정 확장 (16색 팔레트, 키바인딩 커스터마이즈 등).
+- 설정 확장 (키바인딩 커스터마이즈, 블록/오버레이 색 등 —
+  현재 설정 가능한 범위는 [configuration.md](configuration.md) 참고).
+- glyph atlas가 가득 찼을 때의 축출/증설 (현재는 이후 글리프를 그리지 않는다).
 
 ## 코드 스타일
 
