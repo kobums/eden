@@ -42,6 +42,26 @@ struct Tab {
     root: PaneNode,
     /// 포커스된 페인 ID
     focused: usize,
+    /// 줌 상태 — 포커스된 페인이 탭 전체를 차지한다 (tmux의 `prefix+z`).
+    ///
+    /// 분할 트리는 건드리지 않고 배치 단계에서만 무시한다. 줌을 풀면
+    /// 원래 구조가 그대로 돌아온다.
+    zoomed: bool,
+}
+
+impl Tab {
+    /// 이 탭의 페인 배치.
+    ///
+    /// 배치를 계산하는 곳이 셋(히트 테스트·PTY 리사이즈·렌더)이라 여기로 모았다.
+    /// 줌 같은 규칙을 한 곳에만 넣으면 되고, 세 곳이 어긋날 일도 없다.
+    fn layout(&self, content: Rect) -> Vec<(usize, Rect)> {
+        self.root.layout_zoomed(content, self.focused, self.zoomed)
+    }
+
+    /// 페인이 둘 이상일 때만 줌이 의미가 있다.
+    fn can_zoom(&self) -> bool {
+        self.root.panes().len() > 1
+    }
 }
 
 struct State {
@@ -83,9 +103,7 @@ impl State {
 
     /// 활성 탭의 페인 배치를 계산한다.
     fn pane_rects(&self) -> Vec<(usize, Rect)> {
-        let mut out = Vec::new();
-        self.active_tab().root.layout(self.content_rect(), &mut out);
-        out
+        self.active_tab().layout(self.content_rect())
     }
 
     /// 페인 사각형에 대응하는 PTY 크기.
@@ -99,12 +117,12 @@ impl State {
         }
     }
 
-    /// 탭의 모든 페인 세션 크기를 현재 배치에 맞춘다.
+    /// 탭의 보이는 페인 세션 크기를 현재 배치에 맞춘다.
+    ///
+    /// 줌 중에는 가려진 페인의 PTY 크기가 낡은 채로 남지만, 줌을 풀 때
+    /// 다시 호출하므로 화면에 나올 시점에는 항상 맞는다.
     fn relayout_tab(&self, tab_index: usize) {
-        let mut rects = Vec::new();
-        self.tabs[tab_index]
-            .root
-            .layout(self.content_rect(), &mut rects);
+        let rects = self.tabs[tab_index].layout(self.content_rect());
         for (id, rect) in rects {
             if let Some(pane) = self.tabs[tab_index].root.pane(id) {
                 pane.session.resize(self.window_size(rect));
@@ -204,6 +222,7 @@ impl App {
         state.tabs.push(Tab {
             root: PaneNode::Leaf(pane),
             focused: id,
+            zoomed: false,
         });
         state.active = state.tabs.len() - 1;
         self.preedit = None;
@@ -233,6 +252,7 @@ impl App {
         state.tabs.push(Tab {
             root: PaneNode::Leaf(pane),
             focused: id,
+            zoomed: false,
         });
         state.window.request_redraw();
     }
@@ -252,6 +272,8 @@ impl App {
             .split_leaf(target, dir, pane)
             .is_none()
         {
+            // 분할했는데 줌이 걸려 있으면 새 페인이 보이지 않는다.
+            state.tabs[active].zoomed = false;
             state.tabs[active].focused = new_id;
             state.relayout_tab(active);
             self.preedit = None;
@@ -289,6 +311,8 @@ impl App {
             }
         } else {
             state.tabs[tab_index].root.remove(pane_id);
+            // 줌을 유지하면 포커스가 옮겨간 다른 페인이 말없이 확대된 상태가 된다.
+            state.tabs[tab_index].zoomed = false;
             if state.tabs[tab_index].focused == pane_id {
                 state.tabs[tab_index].focused = state.tabs[tab_index].root.first_id().unwrap_or(0);
             }
@@ -309,9 +333,32 @@ impl App {
         }
     }
 
+    /// 포커스된 페인을 탭 전체로 확대/복원한다 (tmux의 `prefix+z`).
+    ///
+    /// 분할 트리는 그대로 두고 배치에서만 무시하므로, 풀면 원래 구조가
+    /// 정확히 돌아온다. 페인이 하나뿐이면 할 일이 없다.
+    fn toggle_zoom(&mut self) {
+        let Some(state) = &mut self.state else { return };
+        let active = state.active;
+        if !state.tabs[active].zoomed && !state.tabs[active].can_zoom() {
+            return;
+        }
+        state.tabs[active].zoomed = !state.tabs[active].zoomed;
+        // 보이게 된 페인들의 PTY 크기를 새 배치에 맞춘다.
+        state.relayout_tab(active);
+        self.preedit = None;
+        state.window.request_redraw();
+    }
+
     /// 방향키로 포커스를 인접 페인으로 옮긴다.
     fn move_focus(&mut self, dx: f32, dy: f32) {
         let Some(state) = &mut self.state else { return };
+        // 줌 중에는 배치에 페인이 하나뿐이라 옮겨갈 곳이 없다. 먼저 푼다.
+        let active = state.active;
+        if state.tabs[active].zoomed {
+            state.tabs[active].zoomed = false;
+            state.relayout_tab(active);
+        }
         let rects = state.pane_rects();
         let focused = state.active_tab().focused;
         let Some(&(_, from)) = rects.iter().find(|(id, _)| *id == focused) else {
@@ -391,8 +438,7 @@ impl App {
         let content = content_rect(window, renderer);
         let tab = &tabs[*active];
         let focused = tab.focused;
-        let mut rects = Vec::new();
-        tab.root.layout(content, &mut rects);
+        let rects = tab.layout(content);
 
         // 페인별 블록을 미리 수집 (draw 중 marks 잠금을 피하기 위해)
         let block_lists: Vec<_> = rects
@@ -432,10 +478,18 @@ impl App {
         let titles: Vec<String> = tabs
             .iter()
             .map(|t| {
-                t.root
+                let title = t
+                    .root
                     .pane(t.focused)
                     .map(|p| p.title.clone())
-                    .unwrap_or_else(|| "zsh".to_string())
+                    .unwrap_or_else(|| "zsh".to_string());
+                // 줌 중에는 다른 페인이 사라진 것처럼 보이므로 표시가 필요하다.
+                // tmux가 윈도우 플래그에 Z를 붙이는 것과 같은 관례.
+                if t.zoomed {
+                    format!("{title} [Z]")
+                } else {
+                    title
+                }
             })
             .collect();
 

@@ -13,6 +13,7 @@ pub(super) enum PaletteAction {
     CloseTab,
     SplitRight,
     SplitDown,
+    ToggleZoom,
     NextTab,
     PrevTab,
     AiGenerate,
@@ -28,6 +29,7 @@ const PALETTE_ACTIONS: &[(&str, PaletteAction)] = &[
     ("Close Tab", PaletteAction::CloseTab),
     ("Split Right", PaletteAction::SplitRight),
     ("Split Down", PaletteAction::SplitDown),
+    ("Toggle Zoom Pane", PaletteAction::ToggleZoom),
     ("Next Tab", PaletteAction::NextTab),
     ("Previous Tab", PaletteAction::PrevTab),
     ("AI: Generate Command", PaletteAction::AiGenerate),
@@ -68,6 +70,7 @@ impl App {
             }
             PaletteAction::SplitRight => self.split_pane(SplitDir::Row),
             PaletteAction::SplitDown => self.split_pane(SplitDir::Column),
+            PaletteAction::ToggleZoom => self.toggle_zoom(),
             PaletteAction::NextTab => self.cycle_tab(1),
             PaletteAction::PrevTab => self.cycle_tab(-1),
             PaletteAction::AiGenerate => {
