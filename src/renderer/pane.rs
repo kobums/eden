@@ -94,6 +94,21 @@ impl Renderer {
                 bg = theme.selection;
             }
 
+            // 검색 하이라이트는 선택을 이긴다 — 검색이 떠 있는 동안 남아 있는
+            // 선택은 거의 항상 낡은 것이다.
+            let matched = view
+                .matches
+                .iter()
+                .position(|m| m.contains(indexed.point, history));
+            if let Some(i) = matched {
+                if Some(i) == view.current_match {
+                    bg = theme.search_current();
+                    fg = theme.bg; // 원색 위에서는 전경도 뒤집어야 읽힌다
+                } else {
+                    bg = theme.search_match();
+                }
+            }
+
             let is_cursor = view.focused
                 && cursor_visible
                 && preedit.is_none()
@@ -110,7 +125,7 @@ impl Renderer {
             } else {
                 1.0
             };
-            if block_cursor || selected || bg != theme.bg {
+            if block_cursor || selected || matched.is_some() || bg != theme.bg {
                 bg_instances.push(BgInstance {
                     rect: [x, y, self.cell_width * width_cells, self.cell_height],
                     color: [bg[0], bg[1], bg[2], 1.0],

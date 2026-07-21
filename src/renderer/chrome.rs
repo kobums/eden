@@ -5,6 +5,8 @@ use super::{BgInstance, Renderer, TextInstance};
 
 /// AI 입력 바 배경색.
 const AI_BAR_BG: [f32; 3] = [0.1, 0.14, 0.24];
+/// 검색 바 배경색. AI 바와 같은 자리를 쓰므로 색으로 구분한다.
+const SEARCH_BAR_BG: [f32; 3] = [0.16, 0.13, 0.08];
 /// 커맨드 팔레트 배경색.
 const PALETTE_BG: [f32; 3] = [0.12, 0.13, 0.18];
 /// 팔레트에 한 번에 보여줄 최대 항목 수.
@@ -166,6 +168,60 @@ impl Renderer {
             FontSize::Term,
             text_instances,
         );
+        (end_x as f64, (y + bar_h) as f64)
+    }
+
+    /// 화면 하단의 검색 바. AI 바와 같은 자리를 쓰되 색으로 구분한다.
+    ///
+    /// 왼쪽에 쿼리, 오른쪽에 `3/17` 같은 카운터를 우측 정렬한다.
+    /// IME 후보창 배치를 위해 입력 끝 좌표를 돌려준다.
+    pub(super) fn draw_search_bar(
+        &mut self,
+        line: &str,
+        status: &str,
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) -> (f64, f64) {
+        let theme = self.theme;
+        let bar_h = self.tab_bar_height();
+        let width = self.config.width as f32;
+        let y = self.config.height as f32 - bar_h;
+        fill(bg_instances, [0.0, y, width, bar_h], SEARCH_BAR_BG);
+
+        let label_y = y + (bar_h - self.cell_height) / 2.0;
+        let pad = self.cell_width;
+
+        // 카운터 자리를 먼저 확보해 긴 쿼리가 그 위로 넘어오지 않게 한다.
+        let status_w = if status.is_empty() {
+            0.0
+        } else {
+            self.text_width(status, FontSize::Term) + pad
+        };
+        let query_max_x = width - pad - status_w;
+
+        let end_x = self.draw_text(
+            line,
+            pad,
+            label_y,
+            query_max_x,
+            theme.fg,
+            FontSize::Term,
+            text_instances,
+        );
+
+        if !status.is_empty() {
+            let status_x = width - pad - self.text_width(status, FontSize::Term);
+            self.draw_text(
+                status,
+                status_x,
+                label_y,
+                width - pad,
+                theme.inactive_fg(),
+                FontSize::Term,
+                text_instances,
+            );
+        }
+
         (end_x as f64, (y + bar_h) as f64)
     }
 
