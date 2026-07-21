@@ -77,7 +77,33 @@ open dist/terminal-dev.app
 [`Casks/terminal-dev.rb`](../Casks/terminal-dev.rb)의 `version`/`sha256`/`url`을
 채운다.
 
-## 구현 이력 (Phase 0~9)
+## 테스트
+
+```sh
+cargo test                                   # 단위 테스트
+cargo clippy --all-targets -- -D warnings    # 린트 (CI에서 차단)
+cargo fmt --all -- --check                   # 포맷
+```
+
+테스트는 GPU도 PTY도 필요 없는 순수 로직만 덮는다 — 창을 띄우거나 mux 데몬을
+스폰하는 코드는 대상이 아니다. 각 모듈 안의 `#[cfg(test)] mod tests`에 두어
+private 함수까지 검증한다 (`tests/` 디렉터리는 쓰지 않는다).
+
+| 대상 | 내용 |
+|---|---|
+| `layout.rs` | 분할 트리: 배치 계산·GAP 정합성·split/remove·경계 |
+| `config.rs` | `key = value` 파서, 범위 검사, 프리셋 순서 의존성 |
+| `renderer/color.rs` | mix, 256색 인덱스, 파생 크롬 색의 명암 방향 |
+| `app/mouse_report.rs` | 버튼 코드·수정자 비트·SGR/X10/UTF-8 인코딩·셀 환산 |
+| `app/search.rs` | 절대↔그리드 좌표 변환, 매치 포함 판정, 순환 이동 |
+
+`layout.rs`는 `PaneNode<P = Pane>`로 페이로드가 제네릭이다. `Pane`이 `Session`을
+소유해(→ mux 데몬 스폰) 테스트에서 만들 수 없기 때문이고, 테스트는
+`PaneNode<usize>`를 쓴다. 기본 타입 파라미터라 호출부는 영향이 없다.
+
+CI는 macOS 러너에서 위 셋과 빌드를 돌린다 ([.github/workflows/ci.yml](../.github/workflows/ci.yml)).
+
+## 구현 이력 (Phase 0~11)
 
 단계별로 만들고 매번 실제 실행/스크린샷으로 검증했다. 전체 로드맵과 각 단계의
 완료 내용·남은 한계는 [design.md](design.md)에 있다.
@@ -94,6 +120,9 @@ open dist/terminal-dev.app
 | 7 | 세션 지속성 (mux 데몬, detach/attach) |
 | 8 | OSC 8 하이퍼링크 + synchronized output |
 | 9 | 설정 파일 + 테마 + 커맨드 팔레트 + Quake + 배포 패키징 |
+| 10 | 마우스 리포팅 (X10/UTF-8/SGR) + 휠 경로 수정 |
+| 11 | 스크롤백 검색 (Cmd+F) |
+| T | 첫 단위 테스트 + GitHub Actions CI |
 
 ## 남은 작업
 
@@ -102,6 +131,9 @@ open dist/terminal-dev.app
   구현.
 - **Kitty graphics protocol** — APC 파싱 + 이미지 디코드 + 별도 GPU 텍스처
   아틀라스/배치 서브시스템 필요.
+- **Phase 10·11의 수동 GUI 검증** — 자동 테스트는 순수 로직만 덮는다.
+  실제 창에서 vim/htop/lazygit/less의 마우스와 Cmd+F 검색을 확인해야 한다
+  (체크리스트는 [design.md](design.md)의 "미결 사항").
 - 코드 서명 · 공증.
 - 설정 확장 (키바인딩 커스터마이즈, 블록/오버레이 색 등 —
   현재 설정 가능한 범위는 [configuration.md](configuration.md) 참고).
