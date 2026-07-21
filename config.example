@@ -15,6 +15,13 @@
 # 스크롤백 줄 수
 # scrollback = 10000
 
+# 커서 모양: block(기본) | bar | underline  (iTerm2 Cursor Type과 대응)
+# cursor-style = block
+
+# 배경 불투명도 0.2~1.0 (1.0 = 불투명). iTerm2처럼 기본 배경에만 적용되고
+# 셀 배경색·텍스트는 불투명을 유지합니다.
+# background-opacity = 0.9
+
 # 색상 (#rrggbb)
 # background = #16161e
 # foreground = #d9d9de

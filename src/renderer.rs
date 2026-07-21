@@ -35,6 +35,9 @@ struct Theme {
     selection: [f32; 3],
     cursor: [f32; 3],
     palette: [[f32; 3]; 16],
+    cursor_style: crate::config::CursorStyle,
+    /// 기본 배경 불투명도 (셀 배경색·텍스트는 항상 불투명 — iTerm2와 동일)
+    opacity: f32,
 }
 
 /// 블록 상태 바 색: 실행 중 / 성공 / 실패
@@ -139,6 +142,8 @@ impl Renderer {
             selection: config.selection,
             cursor: config.cursor,
             palette: config.palette,
+            cursor_style: config.cursor_style,
+            opacity: config.background_opacity,
         };
         // 아래에서 wgpu의 SurfaceConfiguration도 `config`라는 지역 변수를 쓰므로,
         // 앱 설정 값은 여기서 미리 꺼내 둔다.
@@ -165,6 +170,17 @@ impl Renderer {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        // 투명도 사용 시 스트레이트 알파(PostMultiplied)로 컴포지트.
+        // 미지원이면 불투명으로 폴백한다.
+        let alpha_mode = if theme.opacity < 1.0
+            && caps
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+        {
+            wgpu::CompositeAlphaMode::PostMultiplied
+        } else {
+            caps.alpha_modes[0]
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -172,7 +188,7 @@ impl Renderer {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -749,10 +765,11 @@ impl Renderer {
         let blocks = view.blocks;
         let mut ime_pos = None;
 
-        // 페인 배경 (구분선은 페인 사이 틈으로 드러난다)
+        // 페인 배경 (구분선은 페인 사이 틈으로 드러난다).
+        // iTerm2처럼 기본 배경에만 투명도를 적용한다 (셀 배경색·텍스트는 불투명).
         bg_instances.push(BgInstance {
             rect: [rect.x, rect.y, rect.w, rect.h],
-            color: [theme.bg[0], theme.bg[1], theme.bg[2], 1.0],
+            color: [theme.bg[0], theme.bg[1], theme.bg[2], theme.opacity],
         });
 
         {
@@ -836,14 +853,16 @@ impl Renderer {
                     && cursor_visible
                     && preedit.is_none()
                     && indexed.point == cursor_point;
-                if is_cursor {
-                    // 블록 커서: 배경을 커서색으로, 글자를 배경색으로 반전
+                // 블록 커서만 셀을 반전한다. 바/밑줄은 루프 뒤에서 사각형으로 그린다.
+                let block_cursor =
+                    is_cursor && theme.cursor_style == crate::config::CursorStyle::Block;
+                if block_cursor {
                     bg = theme.cursor;
                     fg = theme.bg;
                 }
 
                 let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
-                if is_cursor || selected || bg != theme.bg {
+                if block_cursor || selected || bg != theme.bg {
                     bg_instances.push(BgInstance {
                         rect: [x, y, self.cell_width * width_cells, self.cell_height],
                         color: [bg[0], bg[1], bg[2], 1.0],
@@ -881,6 +900,28 @@ impl Renderer {
                         uv: glyph.uv,
                         color: [fg[0], fg[1], fg[2], 1.0],
                     });
+                }
+            }
+
+            // 바/밑줄 커서 (블록은 셀 반전으로 이미 처리됨)
+            if view.focused && cursor_visible && preedit.is_none() {
+                use crate::config::CursorStyle;
+                let c = theme.cursor;
+                match theme.cursor_style {
+                    CursorStyle::Bar => bg_instances.push(BgInstance {
+                        rect: [cursor_x, cursor_y, 2.0, self.cell_height],
+                        color: [c[0], c[1], c[2], 1.0],
+                    }),
+                    CursorStyle::Underline => bg_instances.push(BgInstance {
+                        rect: [
+                            cursor_x,
+                            cursor_y + self.cell_height - 2.0,
+                            self.cell_width,
+                            2.0,
+                        ],
+                        color: [c[0], c[1], c[2], 1.0],
+                    }),
+                    CursorStyle::Block => {}
                 }
             }
 
@@ -1040,12 +1081,13 @@ impl Renderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // 페인 사이 틈이 구분선으로 보이도록 배경보다 어두운 색으로 클리어
+                        // 페인 사이 틈이 구분선으로 보이도록 배경보다 어두운 색으로 클리어.
+                        // 알파는 배경 불투명도 (투명 모드에서 데스크톱이 비쳐 보이게).
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: TAB_BAR_BG[0] as f64,
                             g: TAB_BAR_BG[1] as f64,
                             b: TAB_BAR_BG[2] as f64,
-                            a: 1.0,
+                            a: self.theme.opacity as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },

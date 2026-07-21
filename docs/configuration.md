@@ -29,6 +29,8 @@ background = #16161e
 | `cursor-color` | `#rrggbb` | `#d9d9de` | 커서 색 |
 | `selection-color` | `#rrggbb` | `#3b547a` | 선택 영역 배경색 |
 | `palette-0` … `palette-15` | `#rrggbb` | (프리셋) | 16색 ANSI 팔레트 (0~7 표준, 8~15 밝은색) |
+| `cursor-style` | `block` \| `bar` \| `underline` | `block` | 커서 모양 (iTerm2 Cursor Type 대응) |
+| `background-opacity` | 실수 (0.2~1.0) | `1.0` | 배경 불투명도. iTerm2처럼 기본 배경에만 적용 — 셀 배경색·텍스트는 불투명 유지 |
 
 색은 `#` 유무 모두 허용된다 (`#16161e` = `16161e`).
 

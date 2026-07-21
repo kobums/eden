@@ -833,7 +833,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let attrs = Window::default_attributes()
             .with_title("terminal")
-            .with_inner_size(LogicalSize::new(960.0, 640.0));
+            .with_inner_size(LogicalSize::new(960.0, 640.0))
+            // 배경 불투명도 < 1.0이면 창을 투명 모드로 (iTerm2 Transparency)
+            .with_transparent(self.config.background_opacity < 1.0);
         let window = Arc::new(event_loop.create_window(attrs).expect("창 생성 실패"));
         window.set_ime_allowed(true);
 

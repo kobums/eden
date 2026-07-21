@@ -5,6 +5,14 @@
 
 use std::path::PathBuf;
 
+/// 커서 모양 (iTerm2의 Cursor Type과 대응: box/vertical bar/underline).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CursorStyle {
+    Block,
+    Bar,
+    Underline,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub font_size: f32,
@@ -17,6 +25,11 @@ pub struct Config {
     pub selection: [f32; 3],
     /// 16색 ANSI 팔레트 (0~7 표준, 8~15 밝은색).
     pub palette: [[f32; 3]; 16],
+    /// 커서 모양 (기본: 블록 — iTerm2 기본값과 동일).
+    pub cursor_style: CursorStyle,
+    /// 배경 불투명도 0.2~1.0 (1.0 = 불투명, iTerm2 Transparency 0.0과 동일).
+    /// iTerm2처럼 기본 배경에만 적용되고 셀 배경색·텍스트는 불투명을 유지한다.
+    pub background_opacity: f32,
 }
 
 /// 기본 16색 팔레트 (Catppuccin 계열).
@@ -50,6 +63,8 @@ impl Default for Config {
             cursor: [0.85, 0.85, 0.87],
             selection: [0.23, 0.33, 0.48],
             palette: DEFAULT_PALETTE,
+            cursor_style: CursorStyle::Block,
+            background_opacity: 1.0,
         }
     }
 }
@@ -140,6 +155,20 @@ impl Config {
             "selection-color" => {
                 if let Some(c) = parse_hex(value) {
                     self.selection = c;
+                }
+            }
+            "cursor-style" => {
+                self.cursor_style = match value.to_lowercase().as_str() {
+                    "bar" | "beam" => CursorStyle::Bar,
+                    "underline" => CursorStyle::Underline,
+                    _ => CursorStyle::Block,
+                };
+            }
+            "background-opacity" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    if (0.2..=1.0).contains(&v) {
+                        self.background_opacity = v;
+                    }
                 }
             }
             // palette-0 ~ palette-15: 16색 ANSI 팔레트
