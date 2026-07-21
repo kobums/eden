@@ -45,9 +45,6 @@ const BLOCK_RUNNING: [f32; 3] = [0.35, 0.55, 0.95];
 const BLOCK_OK: [f32; 3] = [0.35, 0.72, 0.46];
 const BLOCK_FAIL: [f32; 3] = [0.92, 0.42, 0.46];
 
-/// 탭 바 색.
-const TAB_BAR_BG: [f32; 3] = [0.055, 0.055, 0.075];
-const TAB_INACTIVE_FG: [f32; 3] = [0.5, 0.5, 0.55];
 
 /// AI 입력 바 색.
 const AI_BAR_BG: [f32; 3] = [0.1, 0.14, 0.24];
@@ -97,9 +94,16 @@ struct Glyph {
     offset: [f32; 2],
 }
 
+/// 글리프 크기 종류: 터미널 본문 / UI 크롬(탭·상태바, 더 작게).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum FontSize {
+    Term,
+    Ui,
+}
+
 struct Atlas {
     texture: wgpu::Texture,
-    glyphs: HashMap<char, Option<Glyph>>,
+    glyphs: HashMap<(char, FontSize), Option<Glyph>>,
     cursor_x: u32,
     cursor_y: u32,
     row_height: u32,
@@ -126,6 +130,11 @@ pub struct Renderer {
     fonts: Vec<fontdue::Font>,
     font_px: f32,
     ascent: f32,
+    /// UI 크롬(탭/상태바)용 작은 폰트 크기와 메트릭 (iTerm2식 탭 텍스트)
+    ui_px: f32,
+    ui_ascent: f32,
+    ui_advance: f32,
+    ui_line_height: f32,
     theme: Theme,
 
     pub cell_width: f32,
@@ -219,6 +228,16 @@ impl Renderer {
         let cell_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
             .ceil();
         let cell_width = fonts[0].metrics('M', font_px).advance_width.round();
+
+        // UI 크롬(탭/상태바)용 작은 폰트 — iTerm2 탭 텍스트처럼 본문보다 작게
+        let ui_px = (font_px * 0.8).round();
+        let ui_metrics = fonts[0]
+            .horizontal_line_metrics(ui_px)
+            .expect("폰트 라인 메트릭 없음");
+        let ui_ascent = ui_metrics.ascent;
+        let ui_line_height =
+            (ui_metrics.ascent - ui_metrics.descent + ui_metrics.line_gap).ceil();
+        let ui_advance = fonts[0].metrics('M', ui_px).advance_width;
 
         // --- atlas ---
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -423,20 +442,24 @@ impl Renderer {
             fonts,
             font_px,
             ascent,
+            ui_px,
+            ui_ascent,
+            ui_advance,
+            ui_line_height,
             theme,
             cell_width,
             cell_height,
         }
     }
 
-    /// 탭 바 높이 (물리 픽셀).
+    /// 탭 바 높이 (물리 픽셀). iTerm2처럼 컴팩트하게 UI 폰트 기준.
     pub fn tab_bar_height(&self) -> f32 {
-        (self.cell_height * 1.5).ceil()
+        (self.ui_line_height * 1.7).ceil()
     }
 
-    /// 하단 상태바 높이 (물리 픽셀).
+    /// 하단 상태바 높이 (물리 픽셀). UI 폰트 기준.
     pub fn status_bar_height(&self) -> f32 {
-        (self.cell_height * 1.4).ceil()
+        (self.ui_line_height * 1.6).ceil()
     }
 
     /// 탭 바 좌표의 클릭이 몇 번째 탭인지 계산한다.
@@ -462,11 +485,27 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// 글리프를 atlas에서 찾거나 새로 래스터라이즈해 올린다.
+    /// 터미널 본문 크기 글리프.
     fn glyph(&mut self, c: char) -> Option<Glyph> {
-        if let Some(cached) = self.atlas.glyphs.get(&c) {
+        self.glyph_sized(c, FontSize::Term)
+    }
+
+    /// UI(탭/상태바) 크기 글리프.
+    fn ui_glyph(&mut self, c: char) -> Option<Glyph> {
+        self.glyph_sized(c, FontSize::Ui)
+    }
+
+    /// 글리프를 atlas에서 찾거나 새로 래스터라이즈해 올린다.
+    /// 터미널 본문(Term)과 UI 크롬(Ui, 더 작은 크기) 두 크기를 캐싱한다.
+    fn glyph_sized(&mut self, c: char, size: FontSize) -> Option<Glyph> {
+        let key = (c, size);
+        if let Some(cached) = self.atlas.glyphs.get(&key) {
             return *cached;
         }
+        let (px, ascent) = match size {
+            FontSize::Term => (self.font_px, self.ascent),
+            FontSize::Ui => (self.ui_px, self.ui_ascent),
+        };
 
         // 주 폰트 → 폴백 폰트 순서로 글리프를 가진 폰트를 찾는다.
         // 단 PUA(사용자 영역, powerline 아이콘 등)는 폴백 폰트가 엉뚱한 글리프를
@@ -478,7 +517,7 @@ impl Renderer {
             self.fonts.iter().find(|f| f.lookup_glyph_index(c) != 0)
         };
         let glyph = if let Some(font) = font {
-            let (metrics, bitmap) = font.rasterize(c, self.font_px);
+            let (metrics, bitmap) = font.rasterize(c, px);
             if metrics.width == 0 || metrics.height == 0 {
                 None
             } else {
@@ -492,7 +531,7 @@ impl Renderer {
                 }
                 if self.atlas.cursor_y + h + 1 > ATLAS_SIZE {
                     // atlas 가득 참 — Phase 2에서 축출/증설 처리
-                    self.atlas.glyphs.insert(c, None);
+                    self.atlas.glyphs.insert(key, None);
                     return None;
                 }
                 let x = self.atlas.cursor_x;
@@ -526,7 +565,7 @@ impl Renderer {
                     offset: [
                         metrics.xmin as f32,
                         // 셀 상단 → 글리프 상단: baseline(ascent) 위로 (height + ymin)만큼
-                        self.ascent - metrics.height as f32 - metrics.ymin as f32,
+                        ascent - metrics.height as f32 - metrics.ymin as f32,
                     ],
                 })
             }
@@ -534,7 +573,7 @@ impl Renderer {
             None
         };
 
-        self.atlas.glyphs.insert(c, glyph);
+        self.atlas.glyphs.insert(key, glyph);
         glyph
     }
 
@@ -593,21 +632,26 @@ impl Renderer {
         let bar_h = self.status_bar_height();
         let width = self.config.width as f32;
         let y = self.config.height as f32 - bar_h;
+        let bar_bg = mix(theme.bg, [0.0; 3], 0.35);
         bg_instances.push(BgInstance {
             rect: [0.0, y, width, bar_h],
-            color: [TAB_BAR_BG[0], TAB_BAR_BG[1], TAB_BAR_BG[2], 1.0],
+            color: [bar_bg[0], bar_bg[1], bar_bg[2], 1.0],
         });
 
-        let text_y = y + (bar_h - self.cell_height) / 2.0;
-        // 왼쪽
-        let mut x = self.cell_width;
-        for ch in left.chars() {
+        let text_y = y + (bar_h - self.ui_line_height) / 2.0;
+        let ui_adv = self.ui_advance;
+        let char_w = |c: char| {
             use unicode_width::UnicodeWidthChar;
-            let adv = self.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
-            if x + adv > width - self.cell_width {
+            ui_adv * if c.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 }
+        };
+        // 왼쪽
+        let mut x = ui_adv;
+        for ch in left.chars() {
+            let adv = char_w(ch);
+            if x + adv > width - ui_adv {
                 break;
             }
-            if let Some(g) = self.glyph(ch) {
+            if let Some(g) = self.ui_glyph(ch) {
                 text_instances.push(TextInstance {
                     rect: [x + g.offset[0], text_y + g.offset[1], g.size[0], g.size[1]],
                     uv: g.uv,
@@ -617,18 +661,11 @@ impl Renderer {
             x += adv;
         }
         // 오른쪽 (폭 계산 후 우측 정렬)
-        let right_w: f32 = right
-            .chars()
-            .map(|c| {
-                use unicode_width::UnicodeWidthChar;
-                self.cell_width * if c.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 }
-            })
-            .sum();
-        let mut rx = (width - self.cell_width - right_w).max(x);
+        let right_w: f32 = right.chars().map(char_w).sum();
+        let mut rx = (width - ui_adv - right_w).max(x);
         for ch in right.chars() {
-            use unicode_width::UnicodeWidthChar;
-            let adv = self.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
-            if let Some(g) = self.glyph(ch) {
+            let adv = char_w(ch);
+            if let Some(g) = self.ui_glyph(ch) {
                 text_instances.push(TextInstance {
                     rect: [rx + g.offset[0], text_y + g.offset[1], g.size[0], g.size[1]],
                     uv: g.uv,
@@ -957,6 +994,8 @@ impl Renderer {
     }
 
     /// 탭 바를 인스턴스 버퍼에 그린다.
+    /// iTerm2 스타일 탭 바: 제목만 가운데 정렬, 작은 UI 폰트, 얇은 구분선.
+    /// 크롬 색은 테마 배경에서 파생한다 (활성 탭이 비활성보다 살짝 밝음).
     fn draw_tab_bar(
         &mut self,
         tab_titles: &[String],
@@ -964,54 +1003,89 @@ impl Renderer {
         bg_instances: &mut Vec<BgInstance>,
         text_instances: &mut Vec<TextInstance>,
     ) {
-        {
-            let theme = self.theme;
-            let bar_h = self.tab_bar_height();
-            let width = self.config.width as f32;
-            bg_instances.push(BgInstance {
-                rect: [0.0, 0.0, width, bar_h],
-                color: [TAB_BAR_BG[0], TAB_BAR_BG[1], TAB_BAR_BG[2], 1.0],
-            });
+        let theme = self.theme;
+        let bar_h = self.tab_bar_height();
+        let width = self.config.width as f32;
 
-            let tab_count = tab_titles.len().max(1);
-            let tab_width = width / tab_count as f32;
-            let label_y = (bar_h - self.cell_height) / 2.0;
-            for (i, title) in tab_titles.iter().enumerate() {
-                if i == active_tab {
-                    bg_instances.push(BgInstance {
-                        rect: [i as f32 * tab_width, 0.0, tab_width, bar_h],
-                        color: [theme.bg[0], theme.bg[1], theme.bg[2], 1.0],
+        let bar_bg = mix(theme.bg, [0.0; 3], 0.35); // 터미널보다 어두운 크롬
+        let active_bg = mix(theme.bg, [1.0; 3], 0.10); // 활성 탭은 살짝 밝게
+        let separator = mix(theme.bg, [1.0; 3], 0.22);
+        let inactive_fg = mix(theme.fg, theme.bg, 0.45);
+
+        bg_instances.push(BgInstance {
+            rect: [0.0, 0.0, width, bar_h],
+            color: [bar_bg[0], bar_bg[1], bar_bg[2], 1.0],
+        });
+
+        let tab_count = tab_titles.len().max(1);
+        let tab_width = width / tab_count as f32;
+        let label_y = (bar_h - self.ui_line_height) / 2.0;
+        let ui_adv = self.ui_advance;
+        let char_w = |c: char| {
+            use unicode_width::UnicodeWidthChar;
+            ui_adv * if c.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 }
+        };
+
+        for (i, title) in tab_titles.iter().enumerate() {
+            let tab_x = i as f32 * tab_width;
+            if i == active_tab && tab_count > 1 {
+                bg_instances.push(BgInstance {
+                    rect: [tab_x, 0.0, tab_width, bar_h],
+                    color: [active_bg[0], active_bg[1], active_bg[2], 1.0],
+                });
+            }
+            let fg = if i == active_tab { theme.fg } else { inactive_fg };
+
+            // 제목만 표시 (번호 없음), 폭에 맞게 끝을 자르고 가운데 정렬
+            let max_w = tab_width - ui_adv * 2.0;
+            let mut label = String::new();
+            let mut label_w = 0.0;
+            let mut truncated = false;
+            for ch in title.chars() {
+                let w = char_w(ch);
+                if label_w + w > max_w {
+                    truncated = true;
+                    break;
+                }
+                label.push(ch);
+                label_w += w;
+            }
+            // 잘렸으면 iTerm2처럼 말줄임표 표시
+            if truncated {
+                let ell = '…';
+                let ell_w = char_w(ell);
+                while label_w + ell_w > max_w {
+                    match label.pop() {
+                        Some(c) => label_w -= char_w(c),
+                        None => break,
+                    }
+                }
+                label.push(ell);
+                label_w += ell_w;
+            }
+            let mut x = tab_x + ((tab_width - label_w) / 2.0).max(ui_adv);
+            for ch in label.chars() {
+                if let Some(glyph) = self.ui_glyph(ch) {
+                    text_instances.push(TextInstance {
+                        rect: [
+                            x + glyph.offset[0],
+                            label_y + glyph.offset[1],
+                            glyph.size[0],
+                            glyph.size[1],
+                        ],
+                        uv: glyph.uv,
+                        color: [fg[0], fg[1], fg[2], 1.0],
                     });
                 }
-                let fg = if i == active_tab {
-                    theme.fg
-                } else {
-                    TAB_INACTIVE_FG
-                };
-                let label = format!("{} {}", i + 1, title);
-                let mut x = i as f32 * tab_width + self.cell_width;
-                let x_limit = (i + 1) as f32 * tab_width - self.cell_width;
-                for ch in label.chars() {
-                    use unicode_width::UnicodeWidthChar;
-                    let advance =
-                        self.cell_width * if ch.width().unwrap_or(1) >= 2 { 2.0 } else { 1.0 };
-                    if x + advance > x_limit {
-                        break;
-                    }
-                    if let Some(glyph) = self.glyph(ch) {
-                        text_instances.push(TextInstance {
-                            rect: [
-                                x + glyph.offset[0],
-                                label_y + glyph.offset[1],
-                                glyph.size[0],
-                                glyph.size[1],
-                            ],
-                            uv: glyph.uv,
-                            color: [fg[0], fg[1], fg[2], 1.0],
-                        });
-                    }
-                    x += advance;
-                }
+                x += char_w(ch);
+            }
+
+            // 탭 사이 얇은 구분선
+            if i > 0 {
+                bg_instances.push(BgInstance {
+                    rect: [tab_x, bar_h * 0.2, 1.0, bar_h * 0.6],
+                    color: [separator[0], separator[1], separator[2], 1.0],
+                });
             }
         }
     }
@@ -1081,13 +1155,17 @@ impl Renderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // 페인 사이 틈이 구분선으로 보이도록 배경보다 어두운 색으로 클리어.
+                        // 페인 사이 틈이 구분선으로 보이도록 배경보다 어두운 색으로 클리어
+                        // (탭/상태바 크롬과 같은 테마 파생색).
                         // 알파는 배경 불투명도 (투명 모드에서 데스크톱이 비쳐 보이게).
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: TAB_BAR_BG[0] as f64,
-                            g: TAB_BAR_BG[1] as f64,
-                            b: TAB_BAR_BG[2] as f64,
-                            a: self.theme.opacity as f64,
+                        load: wgpu::LoadOp::Clear({
+                            let chrome = mix(self.theme.bg, [0.0; 3], 0.35);
+                            wgpu::Color {
+                                r: chrome[0] as f64,
+                                g: chrome[1] as f64,
+                                b: chrome[2] as f64,
+                                a: self.theme.opacity as f64,
+                            }
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -1175,4 +1253,13 @@ fn indexed_color(idx: u8, theme: &Theme) -> [f32; 3] {
 
 fn rgb8(r: u8, g: u8, b: u8) -> [f32; 3] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
+}
+
+/// 두 색을 t(0~1)로 섞는다. UI 크롬 색을 테마에서 파생할 때 사용.
+fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
 }
