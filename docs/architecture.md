@@ -55,9 +55,11 @@ Term은 GUI 쪽에 남기 때문에 선택·스크롤·블록·AI 등 모든 기
 |---|---|
 | `mod.rs` | `App`·`State`·`Tab` 정의, 탭/페인 생성·분할·닫기, 재그리기, 이벤트 디스패치 |
 | `input.rs` | 키보드·IME → 앱 단축키 또는 PTY 바이트 (`key_to_bytes`) |
-| `mouse.rs` | 클릭·드래그 선택·더블/트리플 클릭·휠·Cmd+클릭 |
+| `mouse.rs` | 클릭·드래그 선택·더블/트리플 클릭·휠·Cmd+클릭·마우스 리포팅 배선 |
+| `mouse_report.rs` | 마우스 리포트 인코딩 (X10/UTF-8/SGR) — 순수 함수, 단위 테스트 대상 |
 | `clipboard.rs` | 선택 복사, 붙여넣기, 마지막 출력 복사 |
 | `palette.rs` | 커맨드 팔레트 액션 목록·필터·실행 |
+| `search.rs` | 스크롤백 검색 (Cmd+F) — 절대 줄 좌표 매치, alacritty RegexIter 사용 |
 | `ai_bar.rs` | AI 바 상태, 컨텍스트 수집, 생성 결과 삽입 |
 | `quake.rs` | Ctrl+` 전역 핫키 등록과 드롭다운 토글 |
 | `status.rs` | 하단 상태바 문자열 (cwd·git 브랜치·CPU·메모리·시계) |

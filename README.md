@@ -15,6 +15,8 @@
 - **로컬 우선 AI** — Cmd+K로 자연어 → 셸 명령 생성 (BYOK 또는 로컬 Ollama, 계정 강제 없음, 생성 명령은 실행하지 않고 입력줄에 삽입만)
 - **내장 멀티플렉서** — 탭 + 페인 분할 (tmux 없이)
 - **세션 지속성** — 창을 닫아도 셸이 데몬에 살아남고, 다시 열면 복원 (detach/attach)
+- **검색** — Cmd+F로 스크롤백 정규식 검색 (smart case, 매치 하이라이트, `3/17` 카운터)
+- **마우스 지원** — vim·htop·lazygit 등에 클릭·드래그·휠 전달 (Shift+드래그는 로컬 선택)
 - **하이퍼링크** — OSC 8 링크에 밑줄 + Cmd+클릭으로 열기
 - **커맨드 팔레트** — Cmd+Shift+P
 - **하단 상태바** — 작업 디렉터리 · git 브랜치 · CPU · 메모리 · 시계 (iTerm2 스타일)
@@ -26,6 +28,16 @@
 cargo build --release
 ./target/release/terminal
 ```
+
+## 테스트
+
+```sh
+cargo test        # 순수 로직 단위 테스트 (GPU·PTY 불필요)
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+CI는 macOS 러너에서 위 셋과 빌드를 돌린다 ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
 ## 설정
 
@@ -46,6 +58,7 @@ scrollback = 10000
 | Cmd+T / Cmd+W | 새 탭 / 탭(세션) 닫기 |
 | Cmd+D / Cmd+Shift+D | 좌우 / 상하 분할 |
 | Cmd+↑ / Cmd+↓ | 이전 / 다음 프롬프트로 점프 |
+| Cmd+F | 스크롤백 검색 (열려 있으면 다음 매치) |
 | Cmd+K | AI 명령 생성 |
 | Cmd+Shift+P | 커맨드 팔레트 |
 | Ctrl+` | Quake 드롭다운 토글 (전역 핫키) |
