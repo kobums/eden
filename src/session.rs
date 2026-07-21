@@ -286,6 +286,30 @@ impl Session {
             None => {}
         }
     }
+
+    /// 절대 줄 `abs`가 화면에 없으면 가운데로 오도록 스크롤한다.
+    ///
+    /// 이미 화면 안이면 아무것도 하지 않는다 — 증분 검색에서 타이핑마다
+    /// 화면이 떨리는 것을 막는다. `jump_to_prompt`가 대상을 화면 맨 위에
+    /// 두는 것과 달리 가운데에 두는 이유는 검색 히트에는 주변 맥락이
+    /// 필요하기 때문이다.
+    ///
+    /// 뷰포트 위치 계산은 `jump_to_prompt`와 같다: `scroll_display`가 상대
+    /// 델타만 받으므로 원하는 절대 offset에서 현재 offset을 뺀다.
+    pub fn scroll_to_abs(&self, abs: i64) {
+        let mut term = self.term.lock();
+        let history = term.grid().history_size() as i64;
+        let offset = term.grid().display_offset() as i64;
+        let screen = Dimensions::screen_lines(term.grid()) as i64;
+
+        let top_abs = history - offset;
+        if abs >= top_abs && abs < top_abs + screen {
+            return; // 이미 보인다
+        }
+
+        let target = (history - abs + screen / 2).clamp(0, history);
+        term.scroll_display(Scroll::Delta((target - offset) as i32));
+    }
 }
 
 // --- mux 읽기 루프 + OSC 133 스캐너 ---

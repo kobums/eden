@@ -16,6 +16,7 @@ pub(super) enum PaletteAction {
     NextTab,
     PrevTab,
     AiGenerate,
+    Search,
     JumpPrev,
     JumpNext,
     CopyLastOutput,
@@ -30,6 +31,7 @@ const PALETTE_ACTIONS: &[(&str, PaletteAction)] = &[
     ("Next Tab", PaletteAction::NextTab),
     ("Previous Tab", PaletteAction::PrevTab),
     ("AI: Generate Command", PaletteAction::AiGenerate),
+    ("Search Scrollback", PaletteAction::Search),
     ("Jump to Previous Prompt", PaletteAction::JumpPrev),
     ("Jump to Next Prompt", PaletteAction::JumpNext),
     ("Copy Last Command Output", PaletteAction::CopyLastOutput),
@@ -72,6 +74,7 @@ impl App {
                 self.ai = AiState::Input(String::new());
                 self.state.as_ref().unwrap().window.request_redraw();
             }
+            PaletteAction::Search => self.toggle_search(),
             PaletteAction::JumpPrev => self.jump_to_prompt(-1),
             PaletteAction::JumpNext => self.jump_to_prompt(1),
             PaletteAction::CopyLastOutput => self.copy_last_output(),

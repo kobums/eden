@@ -37,6 +37,13 @@ impl App {
         if self.ai_bar_key(&event.logical_key, event.text.as_deref(), typing) {
             return;
         }
+        // 검색 바는 Cmd 조합을 삼키지 않는다 — 바가 열려 있어도 Cmd+C 복사는
+        // 되어야 하고, Cmd+F는 아래 단축키 표에서 "다음 매치"로 처리한다.
+        if !mods.super_key()
+            && self.search_key(&event.logical_key, event.text.as_deref(), typing, mods)
+        {
+            return;
+        }
 
         if mods.super_key() {
             self.on_command_key(&event, mods, event_loop);
@@ -112,6 +119,8 @@ impl App {
                 self.ai = AiState::Input(String::new());
                 self.state.as_ref().unwrap().window.request_redraw();
             }
+            // 스크롤백 검색 (열려 있으면 다음 매치)
+            Key::Character("f") | Key::Character("F") => self.toggle_search(),
             // 탭
             Key::Character("t") => self.new_tab(),
             Key::Character("w") => {
@@ -145,25 +154,28 @@ impl App {
     }
 
     pub(super) fn on_ime(&mut self, ime: Ime) {
-        let state = self.state.as_ref().unwrap();
+        // 아래 분기에서 `&mut self`를 부르므로 state 차용을 들고 있을 수 없다.
+        let window = self.state.as_ref().unwrap().window.clone();
         match ime {
             Ime::Preedit(text, _) => {
                 self.preedit = if text.is_empty() { None } else { Some(text) };
             }
             Ime::Commit(text) => {
                 self.preedit = None;
-                // AI 입력 바가 열려 있으면 한글 확정 입력도 그쪽으로
-                if let AiState::Input(buffer) = &mut self.ai {
+                // 오버레이가 열려 있으면 한글 확정 입력도 그쪽으로 보낸다.
+                if self.search.is_some() {
+                    self.search_ime_commit(&text);
+                } else if let AiState::Input(buffer) = &mut self.ai {
                     buffer.push_str(&text);
                 } else {
-                    let pane = state.focused_pane();
+                    let pane = self.state.as_ref().unwrap().focused_pane();
                     Self::on_user_input(pane);
                     pane.session.write(text.into_bytes());
                 }
             }
             Ime::Enabled | Ime::Disabled => {}
         }
-        state.window.request_redraw();
+        window.request_redraw();
     }
 
     /// 입력이 발생하면 선택을 해제하고 화면을 맨 아래로 되돌린다.

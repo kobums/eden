@@ -18,10 +18,30 @@ use alacritty_terminal::term::Term;
 use bytemuck::{Pod, Zeroable};
 use winit::window::Window;
 
+use crate::app::search::AbsMatch;
 use crate::layout::Rect;
 use crate::session::{Block, EventProxy};
 use color::Theme;
 use text::Atlas;
+
+/// 한 프레임을 그리는 데 필요한 전부.
+///
+/// 위치 인자로 넘기던 것을 구조체로 묶었다 — 오버레이가 늘어날 때마다
+/// 인자가 하나씩 붙으면서 호출부에서 무엇이 무엇인지 읽기 어려워졌다.
+pub struct DrawParams<'a> {
+    pub panes: &'a [PaneView<'a>],
+    pub preedit: Option<&'a str>,
+    pub tab_titles: &'a [String],
+    pub active_tab: usize,
+    /// AI 입력 바 한 줄 (Cmd+K).
+    pub ai_bar: Option<&'a str>,
+    /// 검색 바: (입력 줄, `3/17` 같은 상태) (Cmd+F).
+    pub search: Option<(&'a str, &'a str)>,
+    /// 커맨드 팔레트: (쿼리, 항목, 선택 인덱스) (Cmd+Shift+P).
+    pub palette: Option<(&'a str, &'a [String], usize)>,
+    /// 하단 상태바: (왼쪽, 오른쪽).
+    pub status: Option<(&'a str, &'a str)>,
+}
 
 /// 한 페인을 그리는 데 필요한 정보.
 pub struct PaneView<'a> {
@@ -29,6 +49,10 @@ pub struct PaneView<'a> {
     pub blocks: &'a [Block],
     pub rect: Rect,
     pub focused: bool,
+    /// 검색 매치 (절대 줄 번호). 검색이 닫혀 있으면 빈 슬라이스.
+    pub matches: &'a [AbsMatch],
+    /// `matches` 안에서 현재 선택된 매치의 인덱스.
+    pub current_match: Option<usize>,
 }
 
 /// 페인 가장자리 여백 (물리 픽셀). 왼쪽 여백은 블록 상태 바 거터로도 쓴다.
@@ -395,16 +419,18 @@ impl Renderer {
 
     /// 모든 페인과 크롬(탭 바·상태바·오버레이)을 그린다.
     /// IME 후보창 배치를 위해 포커스된 페인의 커서 물리 좌표(좌하단)를 돌려준다.
-    pub fn draw(
-        &mut self,
-        panes: &[PaneView],
-        preedit: Option<&str>,
-        tab_titles: &[String],
-        active_tab: usize,
-        ai_bar: Option<&str>,
-        palette: Option<(&str, &[String], usize)>,
-        status: Option<(&str, &str)>,
-    ) -> Option<(f64, f64)> {
+    pub fn draw(&mut self, params: DrawParams) -> Option<(f64, f64)> {
+        let DrawParams {
+            panes,
+            preedit,
+            tab_titles,
+            active_tab,
+            ai_bar,
+            search,
+            palette,
+            status,
+        } = params;
+
         let mut bg_instances: Vec<BgInstance> = Vec::new();
         let mut text_instances: Vec<TextInstance> = Vec::new();
         let mut ime_pos = None;
@@ -431,9 +457,13 @@ impl Renderer {
             &mut bg_instances,
             &mut text_instances,
         );
-        // AI 바와 팔레트는 오버레이이므로 마지막에 (페인 위에) 그린다.
+        // AI 바·검색 바·팔레트는 오버레이이므로 마지막에 (페인 위에) 그린다.
         if let Some(line) = ai_bar {
             ime_pos = Some(self.draw_ai_bar(line, &mut bg_instances, &mut text_instances));
+        }
+        if let Some((line, status)) = search {
+            ime_pos =
+                Some(self.draw_search_bar(line, status, &mut bg_instances, &mut text_instances));
         }
         if let Some((query, items, selected)) = palette {
             self.draw_palette(

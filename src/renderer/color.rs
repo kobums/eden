@@ -47,6 +47,17 @@ impl Theme {
     pub(super) fn inactive_fg(&self) -> [f32; 3] {
         mix(self.fg, self.bg, 0.45)
     }
+
+    /// 검색 매치 배경. 노랑(팔레트 3)을 배경 쪽으로 죽인 은은한 색 —
+    /// 매치가 많아도 화면이 시끄러워지지 않아야 한다.
+    pub(super) fn search_match(&self) -> [f32; 3] {
+        mix(self.bg, self.palette[3], 0.35)
+    }
+
+    /// 현재 선택된 매치 배경. 다른 매치와 확실히 구분되도록 원색을 쓴다.
+    pub(super) fn search_current(&self) -> [f32; 3] {
+        self.palette[3]
+    }
 }
 
 /// ANSI 색 → RGB. 설정 팔레트(16색)와 256색 확장을 지원한다.

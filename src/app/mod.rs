@@ -5,6 +5,7 @@
 //! - [`mouse`] 클릭·드래그 선택·휠·하이퍼링크
 //! - [`clipboard`] 복사/붙여넣기
 //! - [`palette`] 커맨드 팔레트 (Cmd+Shift+P)
+//! - [`search`] 스크롤백 검색 (Cmd+F)
 //! - [`ai_bar`] AI 명령 생성 바 (Cmd+K)
 //! - [`quake`] Ctrl+` 전역 드롭다운
 //! - [`status`] 하단 상태바 문자열
@@ -16,6 +17,7 @@ mod mouse;
 mod mouse_report;
 mod palette;
 mod quake;
+pub(crate) mod search;
 mod status;
 
 use std::sync::Arc;
@@ -122,6 +124,8 @@ pub struct App {
     /// 취소된 요청의 늦은 응답을 무시하기 위한 시퀀스 번호
     ai_seq: u64,
     palette: Option<Palette>,
+    /// 스크롤백 검색 상태 (Cmd+F). None이면 닫힌 것.
+    search: Option<search::Search>,
     /// Quake 전역 핫키 매니저 (살아있어야 핫키가 유지됨)
     _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
     /// Quake 드롭다운으로 숨겨진 상태인지
@@ -158,6 +162,7 @@ impl App {
             ai: AiState::Idle,
             ai_seq: 0,
             palette: None,
+            search: None,
             _hotkey: None,
             quake_hidden: false,
             sys: sysinfo::System::new(),
@@ -343,16 +348,32 @@ impl App {
         if self.state.is_none() {
             return;
         }
+        // 포커스가 검색 대상 페인을 떠났으면 검색을 닫는다.
+        self.close_search_if_pane_changed();
         // self.state를 가변 차용하기 전에 상태바 문자열을 먼저 만든다.
         let status = self.status_strings();
         // AI 바 / 팔레트 오버레이 문자열도 마찬가지.
         let ai_line = self.ai_bar_line();
-        // AI 바가 열려 있으면 preedit은 바에서 렌더링하므로 페인에는 넘기지 않는다
-        let pane_preedit = if matches!(self.ai, AiState::Idle) {
+        // AI 바나 검색 바가 열려 있으면 preedit은 그 바에서 렌더링하므로
+        // 페인에는 넘기지 않는다.
+        let pane_preedit = if matches!(self.ai, AiState::Idle) && self.search.is_none() {
             self.preedit.clone()
         } else {
             None
         };
+        let search_bar = self.search.as_ref().map(|s| {
+            let preedit = self.preedit.as_deref().unwrap_or("");
+            (format!("Find> {}{}_", s.query, preedit), s.status())
+        });
+        // 매치는 복제한다 — self.search와 self.state를 동시에 가변 차용할 수 없다.
+        // 상한이 1000이라 프레임당 복제 비용은 무시할 만하다.
+        let search_matches: Vec<search::AbsMatch> = self
+            .search
+            .as_ref()
+            .map(|s| s.matches().to_vec())
+            .unwrap_or_default();
+        let search_pane = self.search.as_ref().map(|s| s.pane_id);
+        let search_current = self.search.as_ref().and_then(|s| s.current_index());
         let palette_items: Option<(String, Vec<String>, usize)> = self.palette.as_ref().map(|p| {
             let names = Self::palette_matches(&p.query)
                 .iter()
@@ -395,6 +416,17 @@ impl App {
                     blocks,
                     rect: *rect,
                     focused: *id == focused,
+                    // 하이라이트는 검색 대상 페인에만 그린다.
+                    matches: if search_pane == Some(*id) {
+                        &search_matches
+                    } else {
+                        &[]
+                    },
+                    current_match: if search_pane == Some(*id) {
+                        search_current
+                    } else {
+                        None
+                    },
                 })
             })
             .collect();
@@ -413,15 +445,18 @@ impl App {
             .as_ref()
             .map(|(query, names, selected)| (query.as_str(), names.as_slice(), *selected));
 
-        let ime_pos = renderer.draw(
-            &views,
-            pane_preedit.as_deref(),
-            &titles,
-            *active,
-            ai_line.as_deref(),
-            palette_arg,
-            Some((status.0.as_str(), status.1.as_str())),
-        );
+        let ime_pos = renderer.draw(renderer::DrawParams {
+            panes: &views,
+            preedit: pane_preedit.as_deref(),
+            tab_titles: &titles,
+            active_tab: *active,
+            ai_bar: ai_line.as_deref(),
+            search: search_bar
+                .as_ref()
+                .map(|(line, status)| (line.as_str(), status.as_str())),
+            palette: palette_arg,
+            status: Some((status.0.as_str(), status.1.as_str())),
+        });
         drop(views);
 
         // IME 후보창을 커서 바로 아래에 배치
