@@ -124,6 +124,32 @@ pub(super) fn encode(
     ])
 }
 
+/// 마우스 리포팅이 켜져 있고 사용자가 로컬 동작을 요구하지 않았는가.
+///
+/// Shift는 표준 탈출구다 — htop처럼 화면 전체를 쓰는 앱에서 텍스트를 선택할
+/// 유일한 수단이므로 Shift가 눌려 있으면 리포팅하지 않는다. Cmd는
+/// 하이퍼링크·블록 선택에 이미 쓰이므로 마찬가지로 제외한다.
+pub(super) fn reporting_enabled(mode: TermMode, mods: ModifiersState) -> bool {
+    if mods.shift_key() || mods.super_key() {
+        return false;
+    }
+    mode.intersects(TermMode::MOUSE_MODE)
+}
+
+/// 이 커서 이동을 앱에 보고해야 하는가.
+///
+/// 1003(MOUSE_MOTION)은 버튼과 무관하게 모든 이동을, 1002(MOUSE_DRAG)는
+/// 버튼을 누른 동안만 보고한다. 1000(클릭만)은 이동을 보고하지 않는다.
+pub(super) fn should_report_motion(mode: TermMode, button_held: bool) -> bool {
+    if mode.contains(TermMode::MOUSE_MOTION) {
+        true
+    } else if mode.contains(TermMode::MOUSE_DRAG) {
+        button_held
+    } else {
+        false
+    }
+}
+
 /// 물리 픽셀 → 0-based 뷰포트 셀 좌표와 셀 내 좌/우 반쪽.
 ///
 /// 페인 밖 좌표는 가장자리 셀로 클램프한다 — 드래그가 페인을 벗어나도
@@ -300,6 +326,58 @@ mod tests {
             encode(mode, 0, 300, 0, true).is_some(),
             "레거시와 달리 표현 가능"
         );
+    }
+
+    #[test]
+    fn reporting_is_off_unless_the_app_asked_for_it() {
+        assert!(
+            !reporting_enabled(TermMode::empty(), NONE),
+            "모드가 꺼져 있으면 보고하지 않는다"
+        );
+        assert!(reporting_enabled(TermMode::MOUSE_REPORT_CLICK, NONE));
+        assert!(reporting_enabled(TermMode::MOUSE_DRAG, NONE));
+        assert!(reporting_enabled(TermMode::MOUSE_MOTION, NONE));
+    }
+
+    #[test]
+    fn shift_and_cmd_keep_the_mouse_local() {
+        let on = TermMode::MOUSE_REPORT_CLICK;
+        assert!(
+            !reporting_enabled(on, mods(true, false, false)),
+            "Shift는 로컬 선택 탈출구 — htop에서 텍스트를 복사할 유일한 수단"
+        );
+
+        let mut cmd = ModifiersState::empty();
+        cmd |= ModifiersState::SUPER;
+        assert!(
+            !reporting_enabled(on, cmd),
+            "Cmd는 하이퍼링크·블록 선택에 쓰인다"
+        );
+
+        // alt·ctrl은 수정자 비트로 앱에 전달되므로 탈출구가 아니다.
+        assert!(reporting_enabled(on, mods(false, true, false)));
+        assert!(reporting_enabled(on, mods(false, false, true)));
+    }
+
+    #[test]
+    fn motion_reporting_follows_the_mode() {
+        // 1000: 클릭만 — 이동은 보고하지 않는다
+        let click_only = TermMode::MOUSE_REPORT_CLICK;
+        assert!(!should_report_motion(click_only, false));
+        assert!(
+            !should_report_motion(click_only, true),
+            "버튼을 눌러도 1000은 이동을 원하지 않는다"
+        );
+
+        // 1002: 드래그 — 버튼을 누른 동안만
+        let drag = TermMode::MOUSE_DRAG;
+        assert!(!should_report_motion(drag, false), "버튼 없이는 보고 안 함");
+        assert!(should_report_motion(drag, true));
+
+        // 1003: 전체 이동 — 버튼과 무관
+        let any = TermMode::MOUSE_MOTION;
+        assert!(should_report_motion(any, false));
+        assert!(should_report_motion(any, true));
     }
 
     #[test]

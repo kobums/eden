@@ -89,16 +89,12 @@ impl App {
     /// 유일한 수단이므로 Shift가 눌려 있으면 리포팅하지 않는다.
     /// Cmd는 하이퍼링크·블록 선택에 이미 쓰이므로 마찬가지로 제외한다.
     fn should_report(&self, pane: &Pane) -> Option<TermMode> {
-        let mods = self.modifiers.state();
-        if mods.shift_key() || mods.super_key() {
-            return None;
-        }
         // 모드만 복사하고 락은 즉시 놓는다 — 리더 스레드가 같은 락을 다툰다.
         let mode = {
             let term = pane.session.term.lock();
             *term.mode()
         };
-        mode.intersects(TermMode::MOUSE_MODE).then_some(mode)
+        mouse_report::reporting_enabled(mode, self.modifiers.state()).then_some(mode)
     }
 
     /// 리포트 바이트를 만들어 PTY로 보낸다. `term` 락은 이미 풀린 상태여야 한다.
@@ -130,14 +126,7 @@ impl App {
         // 마우스 리포팅이 켜져 있으면 이동도 앱으로 보낸다.
         // 1003(MOUSE_MOTION)은 버튼과 무관하게, 1002(MOUSE_DRAG)는 누른 동안만.
         if let Some(mode) = self.should_report(pane) {
-            let motion = if mode.contains(TermMode::MOUSE_MOTION) {
-                true
-            } else if mode.contains(TermMode::MOUSE_DRAG) {
-                self.held_button.is_some()
-            } else {
-                false
-            };
-            if motion {
+            if mouse_report::should_report_motion(mode, self.held_button.is_some()) {
                 let hit = Self::grid_point(pane, rect, state, position);
                 // 같은 셀 안의 픽셀 이동은 앱에 의미가 없다 — 보내면 소켓만 채운다.
                 if self.last_report_cell != Some((hit.col, hit.row)) {
