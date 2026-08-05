@@ -117,6 +117,8 @@ pub struct Renderer {
 
     atlas: Atlas,
     fonts: Vec<fontdue::Font>,
+    /// 설정 파일의 논리 폰트 크기(pt). 모니터 배율 변경 시 재계산의 기준.
+    base_font_size: f32,
     font_px: f32,
     ascent: f32,
     /// UI 크롬(탭/상태바)용 작은 폰트 크기와 메트릭 (iTerm2식 탭 텍스트)
@@ -399,6 +401,7 @@ impl Renderer {
             text_capacity: 1024,
             atlas,
             fonts,
+            base_font_size: cfg_font_size,
             font_px,
             ascent,
             ui_px,
@@ -415,6 +418,37 @@ impl Renderer {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// 모니터 배율(scale factor)이 바뀌면 폰트 픽셀 크기와 셀 메트릭을
+    /// 다시 계산하고 glyph atlas를 비운다. 배율이 다른 모니터로 창을
+    /// 옮겼을 때 글자가 커지거나 작아진 채로 남는 문제를 막는다.
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        let font_px = self.base_font_size * scale;
+        if (font_px - self.font_px).abs() < f32::EPSILON {
+            return;
+        }
+        self.font_px = font_px;
+        let line_metrics = self.fonts[0]
+            .horizontal_line_metrics(font_px)
+            .expect("폰트 라인 메트릭 없음");
+        self.ascent = line_metrics.ascent;
+        self.cell_height =
+            (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap).ceil();
+        self.cell_width = self.fonts[0].metrics('M', font_px).advance_width.round();
+
+        self.ui_px = (font_px * UI_FONT_SCALE).round();
+        let ui_metrics = self.fonts[0]
+            .horizontal_line_metrics(self.ui_px)
+            .expect("폰트 라인 메트릭 없음");
+        self.ui_ascent = ui_metrics.ascent;
+        self.ui_line_height =
+            (ui_metrics.ascent - ui_metrics.descent + ui_metrics.line_gap).ceil();
+        self.ui_advance = self.fonts[0].metrics('M', self.ui_px).advance_width;
+
+        // 기존 글리프는 이전 배율로 래스터라이즈됐으므로 캐시를 비워
+        // 다음 프레임부터 새 크기로 다시 올린다.
+        self.atlas.reset();
     }
 
     /// 모든 페인과 크롬(탭 바·상태바·오버레이)을 그린다.

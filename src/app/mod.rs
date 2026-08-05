@@ -605,6 +605,17 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 state.window.request_redraw();
             }
+            // 배율이 다른 모니터로 창을 옮기면 폰트 픽셀 크기를 다시 맞춘다.
+            // (이 이벤트 뒤에 Resized가 따라오지만, 오지 않는 경로도 있어
+            // 여기서도 relayout까지 해 둔다.)
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let state = self.state.as_mut().unwrap();
+                state.renderer.set_scale_factor(scale_factor as f32);
+                for i in 0..state.tabs.len() {
+                    state.relayout_tab(i);
+                }
+                state.window.request_redraw();
+            }
             WindowEvent::KeyboardInput { event, .. } => self.on_key(event, event_loop),
             WindowEvent::Ime(ime) => self.on_ime(ime),
             WindowEvent::CursorMoved { position, .. } => self.on_cursor_moved(position),

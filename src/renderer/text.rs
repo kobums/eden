@@ -58,6 +58,15 @@ impl Atlas {
             row_height: 0,
         }
     }
+
+    /// 캐시를 비우고 패킹 커서를 처음으로 되돌린다.
+    /// 텍스처 내용은 새 글리프가 올라오면서 덮어쓰므로 지울 필요 없다.
+    pub(super) fn reset(&mut self) {
+        self.glyphs.clear();
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.row_height = 0;
+    }
 }
 
 impl Renderer {
