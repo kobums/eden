@@ -318,10 +318,12 @@ fn handle_connection(mut stream: UnixStream, registry: Registry, next_id: Arc<At
 
 /// PTY에 셸을 띄우고, 출력을 리플레이 버퍼 + 구독자에게 뿌리는 리더 스레드를 시작한다.
 fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<DaemonSession>> {
-    let mut options = tty::Options::default();
     // 데몬은 Dock에서 실행된 앱이 띄워 cwd가 `/`다. 지정하지 않으면
     // 셸이 그걸 상속해 `/`에서 시작하므로 홈 디렉터리를 명시한다.
-    options.working_directory = std::env::var("HOME").ok().map(PathBuf::from);
+    let mut options = tty::Options {
+        working_directory: std::env::var("HOME").ok().map(PathBuf::from),
+        ..Default::default()
+    };
     options
         .env
         .insert("TERM".to_string(), "xterm-256color".to_string());

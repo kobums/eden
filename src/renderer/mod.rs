@@ -483,8 +483,7 @@ impl Renderer {
             .horizontal_line_metrics(self.ui_px)
             .expect("폰트 라인 메트릭 없음");
         self.ui_ascent = ui_metrics.ascent;
-        self.ui_line_height =
-            (ui_metrics.ascent - ui_metrics.descent + ui_metrics.line_gap).ceil();
+        self.ui_line_height = (ui_metrics.ascent - ui_metrics.descent + ui_metrics.line_gap).ceil();
         self.ui_advance = self.fonts[0].metrics('M', self.ui_px).advance_width;
 
         // 기존 글리프는 이전 배율로 래스터라이즈됐으므로 캐시를 비워
