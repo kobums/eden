@@ -62,10 +62,20 @@ pub struct PaneView<'a> {
 pub(crate) const PADDING: f32 = 8.0;
 
 /// macOS 시스템 고정폭 폰트 후보 (앞에서부터 시도, 첫 성공이 주 폰트).
+/// Nerd Font(파워라인 프롬프트 글리프 포함)가 설치돼 있으면 우선한다.
 const FONT_CANDIDATES: &[&str] = &[
+    "~/Library/Fonts/MesloLGS NF Regular.ttf",
+    "/Library/Fonts/MesloLGS NF Regular.ttf",
     "/System/Library/Fonts/Menlo.ttc",
     "/System/Library/Fonts/Monaco.ttf",
     "/Library/Fonts/SF-Mono-Regular.otf",
+];
+
+/// PUA(파워라인·Nerd Font 아이콘) 글리프 폴백.
+/// 주 폰트가 Nerd Font가 아닐 때(예: font-path로 Menlo 지정) 여기서 찾는다.
+const NERD_FALLBACK_FONTS: &[&str] = &[
+    "~/Library/Fonts/MesloLGS NF Regular.ttf",
+    "/Library/Fonts/MesloLGS NF Regular.ttf",
 ];
 
 /// 주 폰트에 없는 글리프(한글 등)를 위한 폴백 폰트.
@@ -73,6 +83,14 @@ const FALLBACK_FONTS: &[&str] = &[
     "/System/Library/Fonts/AppleSDGothicNeo.ttc",
     "/System/Library/Fonts/Apple Symbols.ttf",
 ];
+
+/// 경로 맨 앞의 `~/`를 홈 디렉터리로 푼다.
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => path.to_string(),
+    }
+}
 
 /// UI 크롬 폰트는 본문보다 작다 (iTerm2 탭 텍스트).
 const UI_FONT_SCALE: f32 = 0.8;
@@ -117,6 +135,8 @@ pub struct Renderer {
 
     atlas: Atlas,
     fonts: Vec<fontdue::Font>,
+    /// fonts와 인덱스 대응: PUA(파워라인 등) 글리프를 이 폰트에서 찾아도 되는가.
+    pua_ok: Vec<bool>,
     /// 설정 파일의 논리 폰트 크기(pt). 모니터 배율 변경 시 재계산의 기준.
     base_font_size: f32,
     font_px: f32,
@@ -189,18 +209,38 @@ impl Renderer {
         // --- 폰트 ---
         // 설정의 font-path가 있으면 우선, 없으면 시스템 후보.
         let load_font = |path: &str| -> Option<fontdue::Font> {
-            let bytes = std::fs::read(path).ok()?;
+            let bytes = std::fs::read(expand_home(path)).ok()?;
             fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
         };
+        let mut primary_path = None;
         let primary = cfg_font_path
             .as_deref()
-            .and_then(load_font)
-            .or_else(|| FONT_CANDIDATES.iter().find_map(|p| load_font(p)))
+            .into_iter()
+            .chain(FONT_CANDIDATES.iter().copied())
+            .find_map(|p| {
+                let font = load_font(p)?;
+                primary_path = Some(expand_home(p));
+                Some(font)
+            })
             .expect("고정폭 폰트를 찾지 못함");
         let mut fonts = vec![primary];
+        // PUA 글리프를 믿고 찾아도 되는 폰트 표시 (fonts와 인덱스 대응).
+        // 일반 폴백(한글 등)은 PUA에 엉뚱한 글리프를 돌려줄 수 있어 제외한다.
+        let mut pua_ok = vec![true];
+        for path in NERD_FALLBACK_FONTS {
+            if primary_path.as_deref() == Some(expand_home(path).as_str()) {
+                continue; // 주 폰트와 동일 파일이면 중복 로드하지 않는다
+            }
+            if let Some(font) = load_font(path) {
+                fonts.push(font);
+                pua_ok.push(true);
+                break; // Regular 하나면 충분
+            }
+        }
         for path in FALLBACK_FONTS {
             if let Some(font) = load_font(path) {
                 fonts.push(font);
+                pua_ok.push(false);
             }
         }
         let font_px = cfg_font_size * scale;
@@ -401,6 +441,7 @@ impl Renderer {
             text_capacity: 1024,
             atlas,
             fonts,
+            pua_ok,
             base_font_size: cfg_font_size,
             font_px,
             ascent,

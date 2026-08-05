@@ -9,8 +9,10 @@
 # 폰트 크기 (논리 픽셀, 6~72)
 # font-size = 14
 
-# 폰트 파일 경로 (없으면 시스템 고정폭 폰트 자동 선택)
-# font-path = /System/Library/Fonts/Menlo.ttc
+# 폰트 파일 경로 (없으면 자동 선택: MesloLGS Nerd Font → Menlo → Monaco → SF Mono)
+# `~/` 로 시작하는 경로도 됩니다. Nerd Font가 아닌 폰트를 지정해도
+# 파워라인 글리프는 설치된 MesloLGS NF에서 자동 폴백합니다.
+# font-path = ~/Library/Fonts/MesloLGS NF Regular.ttf
 
 # 스크롤백 줄 수
 # scrollback = 10000

@@ -88,11 +88,15 @@ impl Renderer {
         };
 
         // 주 폰트 → 폴백 폰트 순서로 글리프를 가진 폰트를 찾는다.
-        // 단 PUA(사용자 영역, powerline 아이콘 등)는 폴백 폰트가 엉뚱한 글리프를
-        // 돌려주는 경우가 있어 주 폰트에서만 찾는다.
+        // 단 PUA(사용자 영역, powerline 아이콘 등)는 일반 폴백 폰트가 엉뚱한
+        // 글리프를 돌려주는 경우가 있어 주 폰트와 Nerd Font 폴백(pua_ok)에서만 찾는다.
         let is_pua = ('\u{E000}'..='\u{F8FF}').contains(&c);
         let font = if is_pua {
-            self.fonts.first().filter(|f| f.lookup_glyph_index(c) != 0)
+            self.fonts
+                .iter()
+                .zip(&self.pua_ok)
+                .find(|(f, ok)| **ok && f.lookup_glyph_index(c) != 0)
+                .map(|(f, _)| f)
         } else {
             self.fonts.iter().find(|f| f.lookup_glyph_index(c) != 0)
         };
