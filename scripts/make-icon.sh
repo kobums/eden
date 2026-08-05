@@ -13,23 +13,48 @@ BASE="${TMP}/base.png"
 if [[ -n "${SRC}" && -f "${SRC}" ]]; then
   sips -z 1024 1024 "${SRC}" --out "${BASE}" >/dev/null
 else
-  # 소스가 없으면 단색(터미널 배경색) 1024 정사각형 생성
-  sips -s format png --resampleHeightWidth 1024 1024 \
-    /System/Library/CoreServices/DefaultDesktop.heic --out "${BASE}" >/dev/null 2>&1 || \
-    python3 - "${BASE}" <<'PY'
-import sys, struct, zlib
-w = h = 1024
-bg = (22, 22, 30)
-raw = b''.join(b'\x00' + bytes(bg) * w for _ in range(h))
-def chunk(t, d):
-    c = t + d
-    return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-png = b'\x89PNG\r\n\x1a\n'
-png += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
-png += chunk(b'IDAT', zlib.compress(raw, 9))
-png += chunk(b'IEND', b'')
-open(sys.argv[1], 'wb').write(png)
-PY
+  # 소스가 없으면 기본 아이콘을 그린다: 다크 스퀘어클 + 초록 ◡̈ 스마일
+  cat > "${TMP}/icon.swift" <<'SWIFT'
+import AppKit
+
+let out = CommandLine.arguments[1]
+let size: CGFloat = 1024
+
+let rep = NSBitmapImageRep(
+    bitmapDataPlanes: nil, pixelsWide: Int(size), pixelsHigh: Int(size),
+    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+
+// macOS 아이콘 그리드: 1024 캔버스에 여백을 두고 824 스퀘어클
+let inset: CGFloat = 100
+let rect = NSRect(x: inset, y: inset, width: size - 2 * inset, height: size - 2 * inset)
+NSColor(srgbRed: 0.105, green: 0.105, blue: 0.115, alpha: 1).setFill()
+NSBezierPath(roundedRect: rect, xRadius: 185, yRadius: 185).fill()
+
+// ◡ (U+25E1) + 결합 분음 부호(U+0308) — 스마일
+let fontSize: CGFloat = 520
+let font = NSFont(name: "Menlo", size: fontSize) ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+let attrs: [NSAttributedString.Key: Any] = [
+    .font: font,
+    .foregroundColor: NSColor(srgbRed: 0.30, green: 0.85, blue: 0.42, alpha: 1),
+]
+let str = NSAttributedString(string: "\u{25E1}\u{0308}", attributes: attrs)
+// 글리프 실제 잉크 영역으로 정확히 가운데 정렬
+let line = CTLineCreateWithAttributedString(str)
+let ctx = NSGraphicsContext.current!.cgContext
+let bounds = CTLineGetImageBounds(line, ctx)
+ctx.textPosition = CGPoint(
+    x: (size - bounds.width) / 2 - bounds.minX,
+    y: (size - bounds.height) / 2 - bounds.minY)
+CTLineDraw(line, ctx)
+
+NSGraphicsContext.restoreGraphicsState()
+try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: out))
+SWIFT
+  swift "${TMP}/icon.swift" "${BASE}"
 fi
 
 ICONSET="${TMP}/AppIcon.iconset"
