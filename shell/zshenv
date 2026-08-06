@@ -1,16 +1,16 @@
 # 셸 통합 부트스트랩 (ZDOTDIR 우회 주입).
 # 터미널이 ZDOTDIR을 이 디렉터리로 지정해 zsh가 이 파일을 가장 먼저 읽게 한다.
 # 여기서 원래 ZDOTDIR을 복원하고 사용자 설정을 이어가므로 사용자 환경은 그대로다.
-if [[ -n "$TERMDEV_ORIG_ZDOTDIR" ]]; then
-  ZDOTDIR="$TERMDEV_ORIG_ZDOTDIR"
-  unset TERMDEV_ORIG_ZDOTDIR
+if [[ -n "$EDEN_ORIG_ZDOTDIR" ]]; then
+  ZDOTDIR="$EDEN_ORIG_ZDOTDIR"
+  unset EDEN_ORIG_ZDOTDIR
 else
   unset ZDOTDIR
 fi
 
-_termdev_integration="$TERMDEV_INTEGRATION"
+_eden_integration="$EDEN_INTEGRATION"
 [[ -f "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
-if [[ -o interactive && -f "$_termdev_integration" ]]; then
-  source "$_termdev_integration"
+if [[ -o interactive && -f "$_eden_integration" ]]; then
+  source "$_eden_integration"
 fi
-unset _termdev_integration
+unset _eden_integration

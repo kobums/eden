@@ -44,7 +44,7 @@ scripts/
   bundle.sh         .app 번들 생성
   make-icon.sh      아이콘 생성
 Casks/
-  terminal-dev.rb   Homebrew Cask 템플릿
+  eden.rb   Homebrew Cask 템플릿
 docs/               이 문서들
 config.example      설정 예시
 ```
@@ -58,23 +58,23 @@ config.example      설정 예시
 
 ```sh
 pgrep -fl "terminal --daemon"          # 데몬 실행 여부
-ls ~/.cache/terminal-dev/mux/*.sock    # 제어 소켓
-rm -f ~/.cache/terminal-dev/mux/control.sock   # 죽은 소켓 정리
+ls ~/.cache/eden/mux/*.sock    # 제어 소켓
+rm -f ~/.cache/eden/mux/control.sock   # 죽은 소켓 정리
 ```
 
-OSC 133 마크 로그: `TERMDEV_DEBUG_MARKS=1 ./target/debug/terminal`
+OSC 133 마크 로그: `EDEN_DEBUG_MARKS=1 ./target/debug/terminal`
 
 ## 패키징
 
 ```sh
 ./scripts/make-icon.sh    # dist/AppIcon.icns
-./scripts/bundle.sh       # dist/terminal-dev.app (릴리스 빌드 포함)
-open dist/terminal-dev.app
+./scripts/bundle.sh       # dist/eden.app (릴리스 빌드 포함)
+open dist/eden.app
 ```
 
 정식 배포에는 코드 서명 + 공증(notarization)이 필요하다(Apple Developer
 자격증명). Homebrew Cask는 GitHub 릴리스에 `.app.zip`을 올린 뒤
-[`Casks/terminal-dev.rb`](../Casks/terminal-dev.rb)의 `version`/`sha256`/`url`을
+[`Casks/eden.rb`](../Casks/eden.rb)의 `version`/`sha256`/`url`을
 채운다.
 
 ## 테스트

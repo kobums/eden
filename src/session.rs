@@ -583,9 +583,9 @@ fn record_mark(term: &Term<EventProxy>, marks: &Marks, payload: &[u8]) {
     }
     marks.push(Mark { kind, abs_line });
 
-    // TERMDEV_DEBUG_MARKS=1 로 실행하면 마크 기록을 stderr로 확인할 수 있다.
+    // EDEN_DEBUG_MARKS=1 로 실행하면 마크 기록을 stderr로 확인할 수 있다.
     static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *DEBUG.get_or_init(|| std::env::var_os("TERMDEV_DEBUG_MARKS").is_some()) {
+    if *DEBUG.get_or_init(|| std::env::var_os("EDEN_DEBUG_MARKS").is_some()) {
         eprintln!("[mark] {kind:?} abs_line={abs_line}");
     }
 }

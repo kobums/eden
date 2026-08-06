@@ -37,7 +37,7 @@ const EXIT: u8 = 0x85; // (empty) — 셸 종료
 /// mux 제어 소켓 경로.
 pub fn socket_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".cache/terminal-dev/mux/control.sock")
+    PathBuf::from(home).join(".cache/eden/mux/control.sock")
 }
 
 // --- 프레임 IO ---
@@ -330,10 +330,10 @@ fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<Daemo
     // 셸 통합(OSC 133) 주입 — 클라이언트가 스캔한다
     if let Some(shell_dir) = install_shell_integration() {
         if let Ok(orig) = std::env::var("ZDOTDIR") {
-            options.env.insert("TERMDEV_ORIG_ZDOTDIR".to_string(), orig);
+            options.env.insert("EDEN_ORIG_ZDOTDIR".to_string(), orig);
         }
         options.env.insert(
-            "TERMDEV_INTEGRATION".to_string(),
+            "EDEN_INTEGRATION".to_string(),
             shell_dir.join("integration.zsh").display().to_string(),
         );
         options
@@ -490,7 +490,7 @@ fn trim_replay(replay: &mut Vec<u8>) {
 /// 추가하는 쪽이 정직하다 (docs/features.md 참고).
 fn install_shell_integration() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let dir = PathBuf::from(home).join(".cache/terminal-dev/shell");
+    let dir = PathBuf::from(home).join(".cache/eden/shell");
     std::fs::create_dir_all(&dir).ok()?;
     std::fs::write(dir.join(".zshenv"), include_str!("../shell/zshenv")).ok()?;
     std::fs::write(

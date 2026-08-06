@@ -54,7 +54,7 @@
   - 자체 PTY IO 루프로 교체 (alacritty EventLoop 제거) — 파서 앞단에서 OSC 133 가로채기
   - zsh 통합: `shell/integration.zsh`(precmd/preexec → A/C/D;exit), ZDOTDIR 부트스트랩으로 자동 주입
   - 마크는 절대 줄 번호(히스토리 포함)로 기록, Cmd+↑/↓ 프롬프트 점프
-  - 검증: 실행 시 `[mark] PromptStart` 기록 확인 (TERMDEV_DEBUG_MARKS=1)
+  - 검증: 실행 시 `[mark] PromptStart` 기록 확인 (EDEN_DEBUG_MARKS=1)
   - 남은 것: bash/fish 통합, 히스토리 상한(10k) 초과 시 마크 오차, B(프롬프트 끝) 마크 활용
 - [x] Phase 4 — 블록 UI 1단계: 블록 도출 + 상태 시각화 + 블록 단위 조작 (차별화 ①)
   - 마크 → 블록 도출 (프롬프트 A / 출력 시작 C / 종료 D;exit)
@@ -96,7 +96,7 @@
     - Kitty keyboard protocol — 완전한 CSI-u 인코더 필요 (advertise만 하고 인코딩 틀리면 Neovim 등 입력 깨짐)
     - Kitty graphics protocol — APC 파싱 + GPU 이미지 서브시스템(별도 아틀라스) 필요
 - [~] Phase 9 — 프로덕트화: 설정 파일 + 테마 + 커맨드 팔레트 (부분 완료)
-  - `config.rs`: `~/.config/terminal-dev/config` (Ghostty식 key=value), 없으면 기본값
+  - `config.rs`: `~/.config/eden/config` (Ghostty식 key=value), 없으면 기본값
   - 설정 항목: font-size, font-path, scrollback, background/foreground/cursor/selection(#rrggbb)
   - 렌더러를 Theme 기반으로 리팩터 (bg/fg/선택/커서 색 + 폰트 설정 반영), 세션은 scrollback 반영
   - `config.example` 제공 (전부 주석, 복사해서 사용)
@@ -105,8 +105,8 @@
 - [x] Phase 9b — Quake 모드 + 배포 패키징
   - Quake 드롭다운: `global-hotkey`로 Ctrl+` 전역 핫키 등록, OS 콜백을 winit으로 포워딩, 토글 시 화면 상단 배치+포커스
   - 검증: Finder에서 Ctrl+` → 터미널 숨김 → 다시 Ctrl+` → 상단 드롭다운+포커스 확인
-  - 패키징: `scripts/bundle.sh`(.app 번들+Info.plist), `scripts/make-icon.sh`(아이콘), `Casks/terminal-dev.rb`(Homebrew Cask), README/LICENSE(MIT)
-  - 검증: `.app` 번들 실행 → "terminal-dev" 타이틀, 데몬 스폰, 렌더링 정상
+  - 패키징: `scripts/bundle.sh`(.app 번들+Info.plist), `scripts/make-icon.sh`(아이콘), `Casks/eden.rb`(Homebrew Cask), README/LICENSE(MIT)
+  - 검증: `.app` 번들 실행 → "eden" 타이틀, 데몬 스폰, 렌더링 정상
   - 남은 것: 코드 서명·공증(Apple Developer 자격증명 필요)
 
 - [x] Phase 10 — 마우스 리포팅: TTY 앱으로 마우스 이벤트 전달 (Phase 2의 숙제)

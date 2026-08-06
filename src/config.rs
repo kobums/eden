@@ -1,4 +1,4 @@
-//! 설정 파일: `~/.config/terminal-dev/config` (Ghostty식 `key = value`).
+//! 설정 파일: `~/.config/eden/config` (Ghostty식 `key = value`).
 //!
 //! 설정 없이도 기본값으로 완결된 경험을 준다는 원칙에 따라, 파일이 없으면
 //! 전부 기본값을 쓴다. 알 수 없는 키/잘못된 값은 조용히 무시하고 기본값 유지.
@@ -213,7 +213,7 @@ const GUEZWHOZ: Preset = Preset {
 
 fn config_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/terminal-dev/config"))
+    Some(PathBuf::from(home).join(".config/eden/config"))
 }
 
 /// `#rrggbb` 또는 `rrggbb`를 [0,1] RGB로 파싱한다.

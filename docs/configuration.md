@@ -1,6 +1,6 @@
 # 설정
 
-설정 파일 경로: `~/.config/terminal-dev/config`
+설정 파일 경로: `~/.config/eden/config`
 
 파일이 없으면 모든 값이 기본값이다("설치 즉시 완결된 경험" 원칙). 복사해서
 시작할 수 있는 예시는 [`config.example`](../config.example).

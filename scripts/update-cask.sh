@@ -8,12 +8,12 @@ OUT="$1"; VERSION="$2"; SHA="$3"
 
 mkdir -p "$(dirname "$OUT")"
 cat > "$OUT" <<CASK
-cask "terminal-dev" do
+cask "eden" do
   version "$VERSION"
   sha256 "$SHA"
 
-  url "https://github.com/kobums/terminal/releases/download/v#{version}/terminal-dev-#{version}.zip"
-  name "terminal-dev"
+  url "https://github.com/kobums/terminal/releases/download/v#{version}/eden-#{version}.zip"
+  name "eden"
   desc "여러 터미널의 장점을 모은 macOS 네이티브 터미널"
   homepage "https://github.com/kobums/terminal"
 
@@ -24,11 +24,11 @@ cask "terminal-dev" do
 
   depends_on macos: :big_sur
 
-  app "terminal-dev.app"
+  app "eden.app"
 
   zap trash: [
-    "~/.config/terminal-dev",
-    "~/.cache/terminal-dev",
+    "~/.config/eden",
+    "~/.cache/eden",
   ]
 end
 CASK

@@ -24,7 +24,7 @@
 환경을 몰래 바꾸느니 한 줄을 부탁하는 편이 낫다고 판단했다:
 
 ```sh
-echo '[ -f ~/.cache/terminal-dev/shell/integration.bash ] &&   . ~/.cache/terminal-dev/shell/integration.bash' >> ~/.bash_profile
+echo '[ -f ~/.cache/eden/shell/integration.bash ] &&   . ~/.cache/eden/shell/integration.bash' >> ~/.bash_profile
 ```
 
 스크립트는 터미널을 한 번 실행하면 저 경로에 자동으로 깔린다. macOS 기본
@@ -85,8 +85,8 @@ vim·htop·lazygit·btop처럼 마우스를 요구하는 앱에 클릭·드래�
 
 1. `ANTHROPIC_API_KEY` 환경변수가 있으면 Anthropic API 사용 (BYOK).
 2. 없으면 로컬 [Ollama](https://ollama.com) 사용
-   (`TERMDEV_OLLAMA_URL`, 기본 `http://localhost:11434`;
-   `TERMDEV_OLLAMA_MODEL`, 기본 `llama3.2`).
+   (`EDEN_OLLAMA_URL`, 기본 `http://localhost:11434`;
+   `EDEN_OLLAMA_MODEL`, 기본 `llama3.2`).
 
 포커스된 페인의 최근 화면과 마지막 명령의 종료 코드를 컨텍스트로 함께 보내므로
 "방금 그 에러 고쳐줘" 같은 요청도 맥락을 반영한다.
@@ -159,7 +159,7 @@ tmux 없이 탭과 페인 분할을 쓴다.
 
 ## 설정 · 테마 · 프리셋
 
-`~/.config/terminal-dev/config`에서 폰트·색·스크롤백을 바꾼다. `theme = guezwhoz`
+`~/.config/eden/config`에서 폰트·색·스크롤백을 바꾼다. `theme = guezwhoz`
 같은 컬러 프리셋과 16색 ANSI 팔레트, Nerd Font 지정(powerline 글리프)을 지원한다.
 자세한 항목은 [configuration.md](configuration.md), 예시는
 [`config.example`](../config.example).

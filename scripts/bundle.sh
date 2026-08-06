@@ -1,13 +1,13 @@
 #!/bin/bash
-# terminal-dev.app 번들을 만든다.
+# eden.app 번들을 만든다.
 #   ./scripts/bundle.sh            # 릴리스 빌드 후 번들 생성
 #   ./scripts/bundle.sh --no-build # 이미 빌드된 바이너리로 번들만 생성
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP_NAME="terminal-dev"
-BIN_NAME="terminal"
+APP_NAME="eden"
+BIN_NAME="eden"
 VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
 BUNDLE="dist/${APP_NAME}.app"
 CONTENTS="${BUNDLE}/Contents"
@@ -29,7 +29,7 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
-  <key>CFBundleIdentifier</key><string>dev.terminal.app</string>
+  <key>CFBundleIdentifier</key><string>com.kobums.eden</string>
   <key>CFBundleExecutable</key><string>${BIN_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>

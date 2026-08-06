@@ -1,6 +1,6 @@
 # 아키텍처
 
-terminal-dev는 Rust + wgpu(Metal)로 만든 macOS 네이티브 터미널이다. 핵심
+eden는 Rust + wgpu(Metal)로 만든 macOS 네이티브 터미널이다. 핵심
 설계 원칙은 [design.md](design.md)에 정리돼 있고, 이 문서는 실제 구현 구조를
 다룬다.
 
@@ -120,7 +120,7 @@ Cmd+↑/↓ 프롬프트 점프, Cmd+Shift+C 마지막 출력 복사, AI 컨텍�
 
 ## mux 데몬 프로토콜
 
-Unix 소켓(`~/.cache/terminal-dev/mux/control.sock`) 위의 길이 프리픽스 프레임:
+Unix 소켓(`~/.cache/eden/mux/control.sock`) 위의 길이 프리픽스 프레임:
 
 ```
 [u32 len][u8 tag][payload...]

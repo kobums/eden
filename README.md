@@ -1,4 +1,4 @@
-# terminal-dev
+# eden
 
 여러 터미널(iTerm2 · tmux · Alacritty · Kitty · WezTerm · Ghostty · Warp 등)을 조사해
 각각의 장점을 하나로 모은 macOS 네이티브 터미널. Rust + wgpu(Metal)로 구현.
@@ -20,7 +20,7 @@
 - **하이퍼링크** — OSC 8 링크에 밑줄 + Cmd+클릭으로 열기
 - **커맨드 팔레트** — Cmd+Shift+P
 - **하단 상태바** — 작업 디렉터리 · git 브랜치 · CPU · 메모리 · 시계 (iTerm2 스타일)
-- **설정 · 테마** — `~/.config/terminal-dev/config`, 컬러 프리셋(`theme = guezwhoz`) + 16색 팔레트 + Nerd Font + 커서 모양 + 배경 투명도
+- **설정 · 테마** — `~/.config/eden/config`, 컬러 프리셋(`theme = guezwhoz`) + 16색 팔레트 + Nerd Font + 커서 모양 + 배경 투명도
 
 ## 빌드
 
@@ -41,7 +41,7 @@ CI는 macOS 러너에서 위 셋과 빌드를 돌린다 ([.github/workflows/ci.y
 
 ## 설정
 
-`~/.config/terminal-dev/config`에 작성 (없으면 기본값). 예시는
+`~/.config/eden/config`에 작성 (없으면 기본값). 예시는
 [`config.example`](config.example) 참고.
 
 ```
@@ -71,7 +71,7 @@ scrollback = 10000
 Cmd+K 후 자연어(한/영)를 입력하고 Enter. 우선순위:
 
 1. `ANTHROPIC_API_KEY`가 있으면 Anthropic API (BYOK)
-2. 없으면 로컬 [Ollama](https://ollama.com) (`TERMDEV_OLLAMA_URL`, 기본 `http://localhost:11434`)
+2. 없으면 로컬 [Ollama](https://ollama.com) (`EDEN_OLLAMA_URL`, 기본 `http://localhost:11434`)
 
 생성된 명령은 **실행되지 않고** 프롬프트에 삽입만 됩니다. 실행 여부는 사용자가 결정.
 
@@ -90,12 +90,12 @@ GUI를 닫아도 세션이 유지되고, 다시 붙으면 리플레이로 복원
 
 ```sh
 ./scripts/make-icon.sh          # dist/AppIcon.icns 생성
-./scripts/bundle.sh             # dist/terminal-dev.app 번들 생성
-open dist/terminal-dev.app
+./scripts/bundle.sh             # dist/eden.app 번들 생성
+open dist/eden.app
 ```
 
 정식 배포(Homebrew Cask)는 코드 서명 + 공증(notarization)이 필요합니다.
-Cask 템플릿은 [`Casks/terminal-dev.rb`](Casks/terminal-dev.rb) 참고 —
+Cask 템플릿은 [`Casks/eden.rb`](Casks/eden.rb) 참고 —
 GitHub 릴리스에 `.app.zip`을 올린 뒤 `version`/`sha256`/`url`을 채웁니다.
 
 ## 라이선스

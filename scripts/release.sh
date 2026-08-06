@@ -2,7 +2,7 @@
 # 배포용 릴리스: Developer ID 서명 → 공증(notarize) → staple → zip → sha256.
 # (Spot 의 scripts/release.sh 플로우를 이식)
 #
-#   ./scripts/release.sh              # dist/terminal-dev-<version>.zip 생성 + sha256 출력
+#   ./scripts/release.sh              # dist/eden-<version>.zip 생성 + sha256 출력
 #   ./scripts/release.sh --publish    # 위 + git 태그 + GitHub 릴리스 + Homebrew cask 갱신
 #
 # 사전 준비:
@@ -21,9 +21,9 @@ PUBLISH=0
 [ "${1:-}" = "--publish" ] && PUBLISH=1
 
 VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-APP=dist/terminal-dev.app
+APP=dist/eden.app
 DIST=dist
-ZIP="$DIST/terminal-dev-$VERSION.zip"
+ZIP="$DIST/eden-$VERSION.zip"
 REPO="kobums/terminal"
 
 # --- 1. Developer ID 인증서 확인 ---
@@ -91,17 +91,17 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" "$ZIP" --repo "$REPO" --clobber
 else
     gh release create "$TAG" "$ZIP" --repo "$REPO" \
-        --title "terminal-dev $VERSION" --generate-notes
+        --title "eden $VERSION" --generate-notes
 fi
 
 # --- 9. Homebrew cask 갱신 ---
 if [ -n "${TAP_DIR:-}" ]; then
-    ./scripts/update-cask.sh "$TAP_DIR/Casks/terminal-dev.rb" "$VERSION" "$SHA"
-    git -C "$TAP_DIR" add Casks/terminal-dev.rb
-    git -C "$TAP_DIR" commit -m "terminal-dev $VERSION"
+    ./scripts/update-cask.sh "$TAP_DIR/Casks/eden.rb" "$VERSION" "$SHA"
+    git -C "$TAP_DIR" add Casks/eden.rb
+    git -C "$TAP_DIR" commit -m "eden $VERSION"
     git -C "$TAP_DIR" push
-    echo "✅ cask 갱신·푸시 완료: $TAP_DIR/Casks/terminal-dev.rb"
+    echo "✅ cask 갱신·푸시 완료: $TAP_DIR/Casks/eden.rb"
 fi
 
 echo ""
-echo "✅ 게시 완료 → brew install --cask kobums/tap/terminal-dev"
+echo "✅ 게시 완료 → brew install --cask kobums/tap/eden"

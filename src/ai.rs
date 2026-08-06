@@ -2,7 +2,7 @@
 //!
 //! 로컬 우선 원칙: 계정/클라우드 강제 없음.
 //! - `ANTHROPIC_API_KEY`가 있으면 Anthropic API (BYOK)
-//! - 없으면 로컬 Ollama (`TERMDEV_OLLAMA_URL`, 기본 http://localhost:11434)
+//! - 없으면 로컬 Ollama (`EDEN_OLLAMA_URL`, 기본 http://localhost:11434)
 //!
 //! 생성된 명령은 실행하지 않고 입력줄에 삽입만 한다 — 실행은 항상 사용자 몫.
 
@@ -93,9 +93,8 @@ fn anthropic(api_key: &str, user: &str) -> Result<String, String> {
 
 /// 로컬 Ollama (/api/chat).
 fn ollama(user: &str) -> Result<String, String> {
-    let base =
-        std::env::var("TERMDEV_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
-    let model = std::env::var("TERMDEV_OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".into());
+    let base = std::env::var("EDEN_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
+    let model = std::env::var("EDEN_OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".into());
 
     let body = json!({
         "model": model,
