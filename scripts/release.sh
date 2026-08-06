@@ -24,7 +24,7 @@ VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
 APP=dist/eden.app
 DIST=dist
 ZIP="$DIST/eden-$VERSION.zip"
-REPO="kobums/terminal"
+REPO="kobums/eden"
 
 # --- 1. Developer ID 인증서 확인 ---
 IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \

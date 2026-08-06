@@ -5,10 +5,10 @@ cask "eden" do
   version "0.1.0"
   sha256 :no_check # 릴리스 후 실제 zip의 sha256으로 교체
 
-  url "https://github.com/kobums/terminal/releases/download/v#{version}/eden-#{version}.zip"
+  url "https://github.com/kobums/eden/releases/download/v#{version}/eden-#{version}.zip"
   name "eden"
   desc "여러 터미널의 장점을 모은 macOS 네이티브 터미널"
-  homepage "https://github.com/kobums/terminal"
+  homepage "https://github.com/kobums/eden"
 
   depends_on macos: ">= :big_sur"
 
