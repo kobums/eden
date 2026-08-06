@@ -536,6 +536,7 @@ impl ApplicationHandler<AppEvent> for App {
             .with_transparent(self.config.background_opacity < 1.0);
         let window = Arc::new(event_loop.create_window(attrs).expect("창 생성 실패"));
         window.set_ime_allowed(true);
+        crate::set_dock_icon();
 
         let renderer = renderer::Renderer::new(Arc::clone(&window), &self.config);
         self.clipboard = arboard::Clipboard::new().ok();

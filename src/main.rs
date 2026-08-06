@@ -26,7 +26,10 @@ use session::AppEvent;
 /// 번들(.app)은 Info.plist의 AppIcon.icns로 아이콘이 잡히지만,
 /// `cargo run` 같은 맨 바이너리 실행은 번들 메타데이터가 없어
 /// 제네릭 실행파일 아이콘이 뜬다. 둘이 같아 보이도록 여기서 덮어쓴다.
-fn set_dock_icon() {
+///
+/// 앱 launch/activate 과정에서 Dock 타일이 리셋되므로 이벤트 루프
+/// 시작 전이 아니라 `resumed`(창 생성 시점)에서 불러야 유지된다.
+pub(crate) fn set_dock_icon() {
     use objc2::ClassType;
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::{MainThreadMarker, NSData};
@@ -51,7 +54,6 @@ fn main() {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .expect("이벤트 루프 생성 실패");
-    set_dock_icon();
     let mut app = app::App::new(event_loop.create_proxy());
     event_loop.run_app(&mut app).expect("이벤트 루프 실행 실패");
 }
