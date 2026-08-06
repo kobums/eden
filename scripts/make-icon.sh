@@ -7,6 +7,9 @@ cd "$(dirname "$0")/.."
 mkdir -p dist
 
 SRC="${1:-}"
+# 소스를 안 주면 저장소의 기본 아이콘을 쓴다 — 런타임 Dock 아이콘
+# (src/main.rs의 include_bytes!)과 항상 같은 이미지가 되도록.
+[[ -z "${SRC}" && -f assets/icon.png ]] && SRC=assets/icon.png
 TMP="$(mktemp -d)"
 BASE="${TMP}/base.png"
 
