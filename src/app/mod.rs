@@ -597,7 +597,18 @@ impl ApplicationHandler<AppEvent> for App {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            WindowEvent::ModifiersChanged(modifiers) => {
+                // Cmd를 누르고 있는 동안 IME를 끈다. 한글 조합(preedit) 중에는
+                // winit(macOS)이 keyDown을 IME(interpretKeyEvents)로만 보내고
+                // KeyboardInput을 앱에 전달하지 않아 Cmd 단축키가 통째로
+                // 삼켜지기 때문. 끄면 조합 중이던 글자는 폐기된다(Ime::Disabled).
+                let was_super = self.modifiers.state().super_key();
+                self.modifiers = modifiers;
+                let is_super = modifiers.state().super_key();
+                if was_super != is_super {
+                    self.state.as_ref().unwrap().window.set_ime_allowed(!is_super);
+                }
+            }
             WindowEvent::Resized(size) => {
                 let state = self.state.as_mut().unwrap();
                 state.renderer.resize(size.width, size.height);

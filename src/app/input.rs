@@ -5,7 +5,7 @@
 use alacritty_terminal::grid::Scroll;
 use winit::event::{ElementState, Ime, KeyEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 use super::App;
 use super::ai_bar::AiState;
@@ -17,11 +17,12 @@ impl App {
         if event.state != ElementState::Pressed {
             return;
         }
+        let mods = self.modifiers.state();
         // IME 조합 중에는 키 이벤트를 무시한다 (조합 결과는 Ime::Commit으로 온다).
-        if self.preedit.is_some() {
+        // 단, Cmd 조합은 앱 단축키이므로 조합 중에도 통과시킨다.
+        if self.preedit.is_some() && !mods.super_key() {
             return;
         }
-        let mods = self.modifiers.state();
         // Cmd/Ctrl 조합은 단축키이므로 오버레이에 글자로 넣지 않는다.
         let typing = !mods.control_key() && !mods.super_key();
 
@@ -93,20 +94,29 @@ impl App {
         mods: ModifiersState,
         event_loop: &ActiveEventLoop,
     ) {
+        // 물리 키 위치로 매칭한다. 한글 IME 등 비라틴 입력 소스에서는
+        // logical_key가 자모("ㅅ") 등으로 와서 문자 매칭이 실패하기 때문.
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return;
+        };
         // Cmd+Option+화살표: 페인 포커스 이동
         if mods.alt_key() {
-            match event.logical_key.as_ref() {
-                Key::Named(NamedKey::ArrowLeft) => self.move_focus(-1.0, 0.0),
-                Key::Named(NamedKey::ArrowRight) => self.move_focus(1.0, 0.0),
-                Key::Named(NamedKey::ArrowUp) => self.move_focus(0.0, -1.0),
-                Key::Named(NamedKey::ArrowDown) => self.move_focus(0.0, 1.0),
+            match code {
+                KeyCode::ArrowLeft => self.move_focus(-1.0, 0.0),
+                KeyCode::ArrowRight => self.move_focus(1.0, 0.0),
+                KeyCode::ArrowUp => self.move_focus(0.0, -1.0),
+                KeyCode::ArrowDown => self.move_focus(0.0, 1.0),
                 _ => {}
             }
             return;
         }
-        match event.logical_key.as_ref() {
+        if let Some(n) = tab_digit(code) {
+            self.switch_tab(n - 1);
+            return;
+        }
+        match code {
             // 커맨드 팔레트 (Cmd+Shift+P)
-            Key::Character("p") | Key::Character("P") if mods.shift_key() => {
+            KeyCode::KeyP if mods.shift_key() => {
                 self.palette = Some(Palette {
                     query: String::new(),
                     selected: 0,
@@ -114,42 +124,32 @@ impl App {
                 self.state.as_ref().unwrap().window.request_redraw();
             }
             // AI 명령 생성 바
-            Key::Character("k") => {
+            KeyCode::KeyK if !mods.shift_key() => {
                 self.ai = AiState::Input(String::new());
                 self.state.as_ref().unwrap().window.request_redraw();
             }
             // 스크롤백 검색 (열려 있으면 다음 매치)
-            Key::Character("f") | Key::Character("F") => self.toggle_search(),
+            KeyCode::KeyF => self.toggle_search(),
             // 탭
-            Key::Character("t") => self.new_tab(),
-            Key::Character("w") => {
+            KeyCode::KeyT if !mods.shift_key() => self.new_tab(),
+            KeyCode::KeyW if !mods.shift_key() => {
                 let focused = self.state.as_ref().unwrap().active_tab().focused;
                 self.close_pane(focused, true, event_loop);
             }
-            Key::Character(digit)
-                if digit.len() == 1 && digit.chars().next().unwrap().is_ascii_digit() =>
-            {
-                let n = digit.chars().next().unwrap() as usize - '0' as usize;
-                if n >= 1 {
-                    self.switch_tab(n - 1);
-                }
-            }
-            Key::Character("}") => self.cycle_tab(1),
-            Key::Character("{") => self.cycle_tab(-1),
+            KeyCode::BracketRight if mods.shift_key() => self.cycle_tab(1),
+            KeyCode::BracketLeft if mods.shift_key() => self.cycle_tab(-1),
             // 분할
-            Key::Character("d") if mods.shift_key() => self.split_pane(SplitDir::Column),
-            Key::Character("D") => self.split_pane(SplitDir::Column),
-            Key::Character("d") => self.split_pane(SplitDir::Row),
+            KeyCode::KeyD if mods.shift_key() => self.split_pane(SplitDir::Column),
+            KeyCode::KeyD => self.split_pane(SplitDir::Row),
             // 페인 줌 (tmux의 prefix+z)
-            Key::Character("z") | Key::Character("Z") => self.toggle_zoom(),
+            KeyCode::KeyZ => self.toggle_zoom(),
             // 복사/붙여넣기
-            Key::Character("c") if mods.shift_key() => self.copy_last_output(),
-            Key::Character("C") => self.copy_last_output(),
-            Key::Character("c") => self.copy_selection(),
-            Key::Character("v") => self.paste(),
+            KeyCode::KeyC if mods.shift_key() => self.copy_last_output(),
+            KeyCode::KeyC => self.copy_selection(),
+            KeyCode::KeyV if !mods.shift_key() => self.paste(),
             // OSC 133 마크 기반 프롬프트 점프
-            Key::Named(NamedKey::ArrowUp) => self.jump_to_prompt(-1),
-            Key::Named(NamedKey::ArrowDown) => self.jump_to_prompt(1),
+            KeyCode::ArrowUp => self.jump_to_prompt(-1),
+            KeyCode::ArrowDown => self.jump_to_prompt(1),
             _ => {}
         }
     }
@@ -174,7 +174,11 @@ impl App {
                     pane.session.write(text.into_bytes());
                 }
             }
-            Ime::Enabled | Ime::Disabled => {}
+            // IME가 꺼지면(입력 소스 전환, Cmd 누름 등) winit은 빈 Preedit
+            // 이벤트 없이 Disabled만 보내므로 여기서 preedit을 지워야 한다.
+            // 안 지우면 stale preedit이 남아 모든 키 입력이 무시된다.
+            Ime::Disabled => self.preedit = None,
+            Ime::Enabled => {}
         }
         window.request_redraw();
     }
@@ -185,6 +189,22 @@ impl App {
         term.selection = None;
         term.scroll_display(Scroll::Bottom);
     }
+}
+
+/// Cmd+숫자 탭 전환용: 물리 숫자 키 → 1..=9.
+fn tab_digit(code: KeyCode) -> Option<usize> {
+    Some(match code {
+        KeyCode::Digit1 => 1,
+        KeyCode::Digit2 => 2,
+        KeyCode::Digit3 => 3,
+        KeyCode::Digit4 => 4,
+        KeyCode::Digit5 => 5,
+        KeyCode::Digit6 => 6,
+        KeyCode::Digit7 => 7,
+        KeyCode::Digit8 => 8,
+        KeyCode::Digit9 => 9,
+        _ => return None,
+    })
 }
 
 /// 키 입력을 PTY로 보낼 바이트 시퀀스로 변환한다.
