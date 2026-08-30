@@ -21,12 +21,22 @@
 - **커맨드 팔레트** — Cmd+Shift+P
 - **하단 상태바** — 작업 디렉터리 · git 브랜치 · CPU · 메모리 · 시계 (iTerm2 스타일)
 - **설정 · 테마** — `~/.config/eden/config`, 컬러 프리셋(`theme = guezwhoz`) + 16색 팔레트 + Nerd Font + 커서 모양 + 배경 투명도
+- **폰트 자동 선택** — MesloLGS Nerd Font가 설치돼 있으면 우선 사용, 없으면 Menlo/Monaco/SF Mono. 파워라인 글리프(PUA)는 Nerd Font에서 자동 폴백
+- **한글 입력 소스에서도 단축키 동작** — 단축키는 물리 키 위치로 매칭되고, 한글 조합 중에도 Cmd 조합이 먹힌다
+
+## 설치 (Homebrew)
+
+```sh
+brew install --cask kobums/tap/eden
+```
+
+서명·공증(notarize)된 `.app`이 설치된다. 업데이트는 `brew upgrade --cask eden`.
 
 ## 빌드
 
 ```sh
 cargo build --release
-./target/release/terminal
+./target/release/eden
 ```
 
 ## 테스트
@@ -86,17 +96,27 @@ GUI(클라이언트)          mux 데몬(별도 프로세스)
 셸/PTY는 데몬이 소유하고 GUI는 출력 바이트를 로컬 Term에 먹인다. 덕분에
 GUI를 닫아도 세션이 유지되고, 다시 붙으면 리플레이로 복원된다.
 
-## 배포 (패키징)
+## 배포 (패키징 · 릴리스)
+
+로컬 번들만 만들려면:
 
 ```sh
-./scripts/make-icon.sh          # dist/AppIcon.icns 생성
-./scripts/bundle.sh             # dist/eden.app 번들 생성
+./scripts/make-icon.sh          # dist/AppIcon.icns 생성 (최초 1회)
+./scripts/bundle.sh             # dist/eden.app 번들 생성 (릴리스 빌드 포함)
 open dist/eden.app
 ```
 
-정식 배포(Homebrew Cask)는 코드 서명 + 공증(notarization)이 필요합니다.
-Cask 템플릿은 [`Casks/eden.rb`](Casks/eden.rb) 참고 —
-GitHub 릴리스에 `.app.zip`을 올린 뒤 `version`/`sha256`/`url`을 채웁니다.
+정식 릴리스는 `scripts/release.sh`가 전 과정을 자동화합니다 —
+Developer ID 서명 → Apple 공증(notarize) → staple → zip + sha256:
+
+```sh
+./scripts/release.sh                # dist/eden-<version>.zip 생성
+TAP_DIR=~/develop/homebrew-tap \
+  ./scripts/release.sh --publish    # + git 태그 + GitHub 릴리스 + Homebrew cask 갱신·푸시
+```
+
+사전 준비(Developer ID 인증서, 공증 자격증명)와 자세한 절차는
+[docs/development.md](docs/development.md)의 "패키징 · 릴리스" 참고.
 
 ## 라이선스
 

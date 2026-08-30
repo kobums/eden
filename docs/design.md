@@ -81,7 +81,7 @@
   - 검증: Cmd+K → "show disk usage" → `ls -la /tmp` 프롬프트 삽입(미실행) 확인
   - 남은 것: 스트리밍 응답, 에러 설명 모드, 명령 미리보기/수정 UI, ant 프로필 인증
 - [x] Phase 7 — 세션 지속성: detach/attach, 재시작 후 복원 (차별화 ②-b)
-  - `mux.rs`: 셸/PTY를 소유하는 별도 데몬 프로세스 (`terminal --daemon`, setsid로 독립)
+  - `mux.rs`: 셸/PTY를 소유하는 별도 데몬 프로세스 (`eden --daemon`, setsid로 독립)
   - 데몬은 세션별 출력을 리플레이 버퍼(최대 2MB)에 축적 + 붙은 클라이언트에 실시간 전달
   - 클라이언트(GUI)는 Unix 소켓으로 attach → 리플레이 재생으로 화면/스크롤백/실행 상태 복원
   - **Term은 GUI에 그대로 유지** → 선택/스크롤/블록/AI/한글 등 기존 기능 전부 무수정 보존
@@ -107,7 +107,7 @@
   - 검증: Finder에서 Ctrl+` → 터미널 숨김 → 다시 Ctrl+` → 상단 드롭다운+포커스 확인
   - 패키징: `scripts/bundle.sh`(.app 번들+Info.plist), `scripts/make-icon.sh`(아이콘), `Casks/eden.rb`(Homebrew Cask), README/LICENSE(MIT)
   - 검증: `.app` 번들 실행 → "eden" 타이틀, 데몬 스폰, 렌더링 정상
-  - 남은 것: 코드 서명·공증(Apple Developer 자격증명 필요)
+  - ~~남은 것: 코드 서명·공증~~ — Phase 14(릴리스 파이프라인)에서 완료
 
 - [x] Phase 10 — 마우스 리포팅: TTY 앱으로 마우스 이벤트 전달 (Phase 2의 숙제)
   - `app/mouse_report.rs`: 인코딩을 순수 함수로 분리 — App·Term·락이 없어 단위 테스트 가능
@@ -176,15 +176,206 @@
     OSC 133 형식 호환성). 총 81개
   - 남은 것: 구분선 호버 시 커서 모양 변경, 더블클릭으로 50/50 복원
 
+- [x] Phase 14 — 프로덕트화 마무리: 이름·아이콘·폰트·릴리스 파이프라인 (v0.1.1~v0.1.4)
+  - 제품 이름 확정: `terminal-dev` → **eden** (저장소 kobums/eden, 소켓·설정 경로 `~/.cache/eden`·`~/.config/eden`)
+  - 앱 아이콘(◡̈): `.app` 번들은 Info.plist로, `cargo run`은 `resumed`에서
+    `NSApplication.setApplicationIconImage`로 지정 — 맨 바이너리도 Dock 아이콘이 같다
+  - 폰트: MesloLGS Nerd Font 우선 로드 + PUA(파워라인) 글리프는 Nerd Font
+    폴백에서만 찾도록 `pua_ok` 분리. 모니터 배율 변경 시 폰트 재계산 + atlas 리셋
+  - 새 셸을 홈 디렉터리에서 시작 (Dock 실행 시 데몬 cwd가 `/`인 문제)
+  - 릴리스 파이프라인 `scripts/release.sh`: Developer ID 서명(hardened runtime)
+    → notarytool 공증 → staple → zip+sha256 → `--publish`로 git 태그·GitHub
+    릴리스·Homebrew tap(kobums/homebrew-tap) cask 갱신까지 자동화.
+    설치는 `brew install --cask kobums/tap/eden`
+- [x] Phase 15 — 한글 IME 조합 중 Cmd 단축키 (v0.1.5)
+  - 증상: Claude Code처럼 한글로 오래 입력하는 앱에서 Cmd+T/Cmd+D가 먹통.
+    원인은 macOS winit이 조합(preedit) 중 keyDown을 IME로만 보내고
+    KeyboardInput을 앱에 전달하지 않는 것 (앱 코드에 도달조차 안 함)
+  - 수정 ①: Cmd를 누르는 동안 `set_ime_allowed(false)` — IME를 우회해
+    KeyEvent가 전달된다. 조합 중이던 글자는 폐기 (단축키를 누른 의도)
+  - 수정 ②: `on_key`의 preedit 가드에서 Cmd 조합은 통과 (이중 안전장치)
+  - 수정 ③: `Ime::Disabled` 수신 시 preedit 클리어 — 조합 중 한/영 전환 시
+    stale preedit이 남아 모든 키가 죽던 잠재 버그
+  - 수정 ④: 단축키 매칭을 `logical_key` 문자에서 물리 키(`KeyCode`)로 전환 —
+    한글 입력 소스에서 자모("ㅅ")로 와 매칭이 실패할 여지 제거. Shift 조합이
+    정의 안 된 키(Cmd+Shift+W 등)는 여전히 무시해 기존 시맨틱 보존
+
+- [x] Phase 16 — 평문 URL 자동 감지 (Phase 8의 확장)
+  - `app/links.rs`: 스킴 allowlist 정규식으로 **뷰포트만** 스캔. 검색(Phase 11)과
+    같은 alacritty `RegexSearch`/`RegexIter`를 써서 줄바꿈 래핑·와이드 문자가 공짜
+  - 매치는 절대 줄이 아니라 **그리드 좌표**다 — 스캔한 락 안에서만 소비하므로
+    좌표가 밀 틈이 없다. 프레임을 넘겨 캐시하면 안 된다
+  - 끝 문장부호 정리: `.,;:!?`와 **짝 없는** 닫는 괄호만 자른다. 매치 안의
+    여닫이 짝을 세므로 `https://a.com/b(c)`는 살고 `(https://a.com)`은 잘린다
+  - Cmd+클릭 폴백: OSC 8 → 평문 URL → 블록 선택. **OSC 8이 이긴다** — 표시
+    텍스트와 실제 URI가 다른 게 OSC 8의 존재 이유라 추론이 이기면 엉뚱한 주소가 열린다
+  - 렌더러는 페인당 1회 스캔한 결과를 셀 루프에서 `contains`로만 확인 (검색
+    하이라이트와 동일 관용구). 셀마다 정규식을 돌리지 않는다
+  - 테스트 13개. 남은 것: 뷰포트 경계에 걸쳐 래핑된 URL은 보이는 부분만 매치
+  - 수동 검증: `(https://a.com)`은 괄호를 빼고, `https://x.io/b(c)`는 포함하고,
+    `https://end.org.`은 마침표를 빼고 밑줄이 그어지는 것을 실제 창에서 확인
+- [x] Phase 17 — 명령 완료 알림 + OSC 9/777 (Phase 3의 D 마크 활용)
+  - `Mark`에 `at: Instant` 추가 → D 마크와 직전 C 마크의 차이가 소요 시간
+  - **판단은 App(메인 스레드)에서** 한다. reader 스레드는 `CommandFinished`·
+    `Notify` 이벤트로 사실만 보낸다 — AppKit을 메인 스레드 밖에서 부를 수 없다
+  - 조건: 임계값(기본 10초) 이상 + "보고 있지 않음"(창 비포커스 또는 그 페인의
+    탭이 비활성). `WindowEvent::Focused`를 이번에 처음 추적한다
+  - 전달 2단계: `requestUserAttention`(Dock 바운스, 권한·번들 조건 없음) +
+    `NSUserNotification` 배너. 신식 `UNUserNotificationCenter`는 번들 밖
+    `cargo run`에서 크래시해 일부러 쓰지 않았다 (deprecated 경고는 함수 하나에 격리)
+  - OSC 9/777은 `watch_cwd`와 같은 carry 패턴 (스트림 감시의 네 번째 복제)
+  - **attach 리플레이 가드**: 재접속 시 데몬이 과거 출력을 재생하면서 옛 OSC
+    9/777이 다시 울린다. attach 세션의 첫 Output 프레임은 알림 감시를 건너뛴다.
+    D 마크는 리플레이 시 소요 시간 ≈ 0이라 임계값이 알아서 거른다
+  - 설정 `notify`·`notify-threshold`. 테스트 15개
+  - **수동 검증에서 잡은 크래시**: 번들 밖(`cargo run`, 맨 바이너리) 실행에서는
+    `defaultUserNotificationCenter`가 nil을 돌려준다(알림 센터가 번들 식별자로
+    앱을 구분한다). objc2 생성 바인딩이 반환값을 non-null로 선언해 nil에서
+    패닉했고, 알림이 뜰 때마다 앱이 죽었다. 바인딩을 우회해 `msg_send_id!`로
+    `Option`을 받고, nil이면 배너를 포기하고 Dock 바운스만 남긴다
+- [x] Phase 18 — 블록 거터 색 설정 + 키바인딩 커스터마이즈 (Phase 4·9의 숙제)
+  - 거터 색 3개(`pane.rs`의 하드코딩 상수)를 Theme으로 옮기고 `block-gutter`로
+    끌 수 있게 했다
+  - `app/action.rs`: 팔레트 전용이던 `PaletteAction`을 공용 `Action`으로 승격.
+    **키바인딩과 팔레트가 같은 액션 집합을 공유한다** — 예전에는 단축키 표와
+    팔레트 목록이 따로라 조용히 갈라질 수 있었다
+  - `on_command_key`의 match를 `(물리 키, Shift, Option) → Action` 조회 표로 교체.
+    예전 match에는 Shift를 보지 않는 팔(F·Z·숫자·화살표)이 있어서, 표에서
+    "Shift 무관"을 두 항목으로 펼쳐 동작을 정확히 보존했다 (회귀 스냅샷 테스트)
+  - 설정 `keybind = cmd+t = new-tab`은 **그 조합 하나만** 바꾼다 (전체 교체 아님)
+  - **Cmd 없는 조합은 거부한다.** Cmd 없는 키는 셸로 가야 하므로 사용자가 그
+    영역을 가로채면 터미널이 망가진다
+  - `run_action`은 각 메서드를 부르기만 한다 — 레이아웃 저장(Phase 19) 같은
+    부수 효과가 메서드 본문에 있어서, 로직을 끌어오면 팔레트 실행 시 훅이 빠진다
+  - 테스트 15개
+- [x] Phase 19 — 분할 레이아웃 복원 (Phase 7의 숙제)
+  - `app/layout_persist.rs`: 탭 순서·페인 트리·분할 비율·포커스·활성 탭을
+    `~/.cache/eden/layout.json`에 저장/복원. leaf 값은 mux 세션 ID다
+  - `PaneNode<P>`가 이미 페이로드 제네릭(Phase T)이라 `PaneNode<u64>`로
+    직렬화·가지치기를 GPU·소켓 없이 전부 테스트할 수 있었다
+  - serde derive를 layout.rs에 붙이지 않았다 — `Pane`이 `Session`(소켓·스레드)을
+    소유해 Serialize가 불가능하다. `serde_json::Value` 수동 변환이 오히려 짧다
+  - 가지치기: 죽은 leaf 제거 → 자식 하나 남은 Split 접기 → 전멸한 탭 제거 →
+    focused가 죽었으면 첫 leaf. 기존 `remove`와 같은 규칙을 공유한다
+  - **세션 ID 오매칭 방지**: 데몬이 재시작하면 ID가 1부터 재발급돼 옛 파일이
+    엉뚱한 세션과 붙는다. 데몬 시작 시각(boot id)을 `SESSION_LIST` 응답
+    **꼬리에** 붙이고 파일과 대조한다. 꼬리라서 구버전 데몬 + 신버전 GUI 조합도
+    안 깨진다(응답이 짧으면 None → 대조 포기)
+  - 저장은 구조 변화 5시점에 즉시(임시 파일 + rename). 종료 훅에 걸지 않는다 —
+    크래시에서도 마지막 구조가 남아야 세션 지속성의 목적에 맞다
+  - 깨진 JSON·미래 version은 예전 동작(세션당 탭 1개)으로 폴백. 테스트 12개
+  - **수동 검증에서 고친 것**: 페인을 콘텐츠 전체 크기로 붙였다가 relayout으로
+    줄이면, 그 사이 재생된 리플레이가 넓은 폭으로 그려진 뒤 좁은 폭으로
+    리플로우돼 프롬프트가 두 번 그려진 것처럼 보였다. `PaneNode`가 페이로드
+    제네릭이라 세션 ID 트리로도 배치를 계산할 수 있어서, attach 전에 각 leaf의
+    **최종 크기**를 구해 넘기는 것으로 해결했다
+  - 남은 것: 파일 락 없음(GUI 여럿이면 마지막 저장이 이긴다), 줌 상태 미저장
+- [x] Phase 20 — Kitty keyboard protocol (CSI u) — 위 "미뤄둔 프로토콜" 해소
+  - **파서 작업은 0이었다.** alacritty_terminal 0.26이 프로토콜 상태 머신(모드
+    스택 push/pop/query, TermMode 플래그 5종, 대체 스크린 분리)을 이미 갖고 있다.
+    `Config { kitty_keyboard: true }` 한 줄 + 인코더만 만들면 됐다
+  - `app/kitty_key.rs`: mouse_report.rs와 같은 순수 함수 패턴. winit `KeyEvent`는
+    테스트에서 만들 수 없어 자체 `KeyInput` + `from_winit` 어댑터로 분리했다
+  - 플래그 5종 전부 구현. 반쪽 인코더는 앱 입력을 깨뜨리므로 부분 구현은 안 한다
+  - kitty의 실제 구현(key_encoding.c)을 대조해, alacritty가 스펙과 어긋나는
+    Shift+Enter/Shift+Tab을 `CSI 13;2u`/`CSI 9;2u`로 인코딩했다 (Neovim `<S-CR>`의 관건)
+  - `term.mode()`는 **매 키마다 읽는다.** 대체 스크린 진입/이탈에서 모드가 갈려
+    캐시하면 즉시 어긋난다
+  - IME는 건드리지 않았다 — preedit 중에는 kitty 모드라도 인코딩하지 않고,
+    조합 확정은 기존 Commit 경로로 평문이 간다 (Phase 15 회귀 방지)
+  - kitty 플래그가 없으면 release는 버린다 — 이 판정이 틀리면 모든 키가 두 번
+    입력된다. 명시적 테스트로 고정했다
+  - 설정 `kitty-keyboard`, **기본 off** (dogfooding 탈출구). 테스트 43개
+  - 미구현(스펙상 생략 허용): alternate key의 3번째 필드(기본 배치 키) —
+    winit이 배치 정보를 노출하지 않는다. caps/num lock 수식자 비트도 동일
+  - **수동 검증 결과(실제 창에서)**: 질의 응답 `CSI ? 0 u`, 인코딩
+    `CSI 97;5u`(Ctrl+A)·`CSI 13;2u`(Shift+Enter)·`CSI 98;6u`(Ctrl+Shift+B),
+    numpad `CSI 57410u`(`/`)·`CSI 57409u`(`.`)를 확인했다. 모드 스택은
+    `0 → push1 → 1 → push5 → 5 → pop → 1 → pop → 0`으로 정확히 풀린다 —
+    앱이 종료하며 pop하면 셸이 레거시로 돌아온다
+  - 남은 것: Neovim 등 실제 클라이언트에서 며칠 써 본 뒤 기본 on 전환
+
 미뤄둔 프로토콜 — 안전한 테스트 하네스가 없으면 검증 불가라 보류:
-- Kitty keyboard(CSI-u 인코더): 완전 구현 + Neovim 등 실제 클라이언트 테스트 필요 (반쪽 인코더는 앱 입력을 깨뜨림)
+- ~~Kitty keyboard(CSI-u 인코더)~~ — **Phase 20에서 완료** (기본 off, 검증 후 on 예정)
 - Kitty graphics(GPU 이미지): APC 파싱 + 이미지 디코드 + 별도 텍스처 아틀라스/배치 서브시스템 필요
 
 각 Phase는 "직접 실행해서 확인 가능한 상태"로 끝나야 다음으로 넘어간다.
 
+## 향후 로드맵 후보 (Phase 16~)
+
+2026-08-30 조사 결과. ① 위 각 Phase의 "남은 것", ② research.md의 타 터미널
+장점 중 미도입분, ③ 2026년 동향(AI 에이전트 오케스트레이션 런타임으로서의
+터미널)을 종합했다. 착수하면 정식 Phase로 승격해 위 로드맵에 편입한다.
+
+**우선순위 Top 5는 Phase 16~20으로 전부 구현됐다** (위 로드맵 참고).
+착수 당시의 코드 레벨 조사·설계는 [plan.md](plan.md)에 남아 있다.
+
+### 우선순위 Top 5 — 전부 완료 (2026-08-30)
+
+1. ~~평문 URL 자동 감지~~ — **Phase 16**
+2. ~~명령 완료 알림 + OSC 9/777~~ — **Phase 17**
+3. ~~Kitty keyboard protocol (CSI u)~~ — **Phase 20** (기본 off, 검증 후 on)
+4. ~~분할 레이아웃 복원~~ — **Phase 19**
+5. ~~블록 거터 색 설정 + 키바인딩 커스터마이즈~~ — **Phase 18**
+
+### 전체 후보 (카테고리별)
+
+A. 표준 프로토콜 완성
+- ~~Kitty keyboard protocol~~ — Phase 20 완료
+- Kitty graphics protocol + Sixel 폴백 — `yazi`·이미지 미리보기. APC 파싱 +
+  GPU 이미지 아틀라스 필요, 큰 작업 (보류 사유는 위 참고)
+- undercurl(물결 밑줄) + 컬러 밑줄 — LSP/린터 에러 표시 표준. 렌더러 작업은 작은 편
+- ~~OSC 9/777 알림~~ — Phase 17 완료
+
+B. 블록 UI 심화 (Phase 4의 남은 것 포함)
+- 블록 접기(collapse) — 긴 출력 접어서 스크롤백 탐색성 확보 (Warp 핵심 UX)
+- 블록 재실행 — 블록 클릭 → 그 명령 다시 실행
+- 블록 검색/북마크, 블록 호버 액션(복사·공유 버튼)
+- 트리거(iTerm2식) — 출력 정규식 매칭 → 하이라이트/알림/명령
+
+C. AI 심화 — 에이전트 오케스트레이션 (2026 최대 흐름)
+- tmux가 AI 에이전트 런타임으로 재부상했다(세션 지속성·프로세스 격리·CLI
+  조작). eden은 이미 mux 데몬 + 블록 마크를 갖고 있어 구조적 강점이 있다
+- `eden` CLI 서브커맨드 (`eden list` / `eden send <id> "…"` / `eden attach`)
+  — tmux `send-keys`처럼 스크립트·에이전트가 세션 조작. mux 프로토콜에
+  프레임 몇 개 추가로 가능
+- 에이전트 세션 대시보드 — 여러 페인의 Claude Code 상태(실행 중/입력 대기)를
+  탭 바·상태바에 표시. 블록 마크(실행 중 = D 마크 없음)로 감지 가능
+- AI 스트리밍 응답 + 에러 설명 모드 (Phase 6의 남은 것) — 실패 블록에서
+  "왜 실패했나" 한 번에 질의
+- git worktree 연동 병렬 세션 생성
+
+D. 멀티플렉서·세션 심화 (차별화 ②)
+- ~~분할 레이아웃 복원~~ — Phase 19 완료
+- detach 시 리플레이 2MB 초과분 스크롤백 손실 개선 (그리드 스냅샷 저장 등)
+- 원격 mux(SSH 도메인) — WezTerm의 킬러 피처. mux가 이미 소켓 기반이라
+  확장 여지 있음. 장기 과제
+- 선언적 레이아웃(Zellij KDL식) — 프로젝트별 "탭 3개+분할" 프리셋 (Phase 5b의 남은 것)
+- 세션 이름 지정 (숫자 ID 대신)
+
+E. UX·발견 가능성·설정
+- ~~평문 URL 자동 감지~~ — Phase 16 완료. ~~거터 색·키바인딩 설정~~ — Phase 18 완료
+- 설정 핫 리로드 — 파일 감시로 테마 즉시 반영 (현재는 재시작 필요).
+  키바인딩·거터 색은 리로드가 쉽지만 `kitty-keyboard`는 세션 생성 시점에만
+  Term Config로 들어가 기존 세션에 반영되지 않는다 (Phase 20 참고)
+- 키바인딩 힌트/치트시트 오버레이 (Zellij의 발견 가능성 교훈)
+- 페인별 독립 검색, 검색 히스토리 (Phase 11의 남은 것)
+- 구분선 호버 시 커서 변경, 더블클릭 50/50 복원 (Phase 13의 남은 것)
+- 폰트 ligature — fontdue 한계로 shaping 엔진 필요, 장기
+
+F. 성능·품질 (내부)
+- damage tracking — 변경된 셀만 재렌더 (research 체크리스트 1번, 현재는 매
+  프레임 전체 재구성)
+- glyph atlas 가득 참 시 축출/증설
+- 스크롤백 상한(10k) 초과 시 블록 마크 오차 보정 (Phase 3의 남은 것)
+
+남은 후보 중 다음 타로 유력한 것은 **B(블록 접기·재실행)** 와 **C(에이전트
+오케스트레이션)** 다. 둘 다 eden이 이미 가진 것(블록 마크, mux 데몬) 위에
+얹히고, 다른 터미널이 쉽게 따라오기 어려운 방향이다.
+
 ## 미결 사항
 
-- 제품 이름 (현재 리포 이름 `terminal`)
+- ~~제품 이름~~ — **eden으로 확정** (v0.1.4, 저장소 kobums/eden)
 - ~~Phase 10·11의 수동 GUI 검증~~ — **2026-07-21 완료.** 원시 SGR 시퀀스
   (`^[[<0;12;5M`/`m`), vim 클릭·드래그·휠, Shift+드래그 로컬 선택,
   less 휠(ALTERNATE_SCROLL·APP_CURSOR 분기), 검색 하이라이트·카운터·순환·
@@ -194,5 +385,6 @@
   밀려도 절대 좌표가 유지되는지)는 `app/search.rs`의 테스트가 진짜 `Term`으로
   덮으므로 회귀는 CI가 잡는다. 마우스는 인코딩까지만 자동화돼 있고 winit
   이벤트 경로는 여전히 수동 확인이 필요하다.
-- 라이선스 (MIT vs GPL — 공개 프로덕트 방향이므로 초기에 결정 필요)
-- IME/한글 조합 입력 처리 방식 (Phase 2에서 조사)
+- ~~라이선스~~ — **MIT로 확정** (LICENSE 파일)
+- ~~IME/한글 조합 입력 처리 방식~~ — Phase 2(preedit 오버레이·후보창 배치)와
+  Phase 15(조합 중 Cmd 단축키)에서 완료

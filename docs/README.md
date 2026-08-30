@@ -13,7 +13,8 @@ eden의 문서 모음. 프로젝트 개요는 저장소 루트의
 | [keybindings.md](keybindings.md) | 전체 단축키 |
 | [development.md](development.md) | 빌드·실행·프로젝트 구조·단계별 이력·기여 가이드 |
 | [research.md](research.md) | 조사 보고서 — 기존 터미널(iTerm2·tmux·Alacritty·Kitty·WezTerm·Ghostty·Warp 등) 비교 |
-| [design.md](design.md) | 설계 결정·아키텍처·단계별 로드맵(Phase 0~9 이력) |
+| [design.md](design.md) | 설계 결정·아키텍처·단계별 로드맵(Phase 0~15 이력)·향후 로드맵 후보 |
+| [plan.md](plan.md) | Phase 16~20 구현 계획 — URL 감지·완료 알림·설정 확장·레이아웃 복원·Kitty keyboard |
 
 ## 읽는 순서 (추천)
 

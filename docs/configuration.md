@@ -22,7 +22,7 @@ background = #16161e
 |---|---|---|---|
 | `theme` | 프리셋 이름 | `catppuccin` | 컬러 프리셋. `catppuccin` \| `guezwhoz`(iTerm2 다크) |
 | `font-size` | 실수 (6~72) | `14` | 폰트 크기 (논리 픽셀) |
-| `font-path` | 파일 경로 | (시스템 자동) | 주 폰트 파일. 없으면 Menlo/Monaco/SF Mono 순으로 자동 선택 |
+| `font-path` | 파일 경로 | (시스템 자동) | 주 폰트 파일 (`~/` 시작 경로 지원). 없으면 MesloLGS Nerd Font → Menlo → Monaco → SF Mono 순으로 자동 선택 |
 | `scrollback` | 정수 | `10000` | 스크롤백 줄 수 (최대 1,000,000) |
 | `background` | `#rrggbb` | `#16161e` | 배경색 |
 | `foreground` | `#rrggbb` | `#d9d9de` | 기본 전경색 |
@@ -31,8 +31,52 @@ background = #16161e
 | `palette-0` … `palette-15` | `#rrggbb` | (프리셋) | 16색 ANSI 팔레트 (0~7 표준, 8~15 밝은색) |
 | `cursor-style` | `block` \| `bar` \| `underline` | `block` | 커서 모양 (iTerm2 Cursor Type 대응) |
 | `background-opacity` | 실수 (0.2~1.0) | `1.0` | 배경 불투명도. iTerm2처럼 기본 배경에만 적용 — 셀 배경색·텍스트는 불투명 유지 |
+| `block-gutter` | `on` \| `off` | `on` | 명령 블록 왼쪽의 상태 거터(세로 줄) 표시 |
+| `block-running-color` | `#rrggbb` | `#598cf2` | 실행 중인 블록의 거터 색 |
+| `block-ok-color` | `#rrggbb` | `#59b875` | 성공(exit 0)한 블록의 거터 색 |
+| `block-fail-color` | `#rrggbb` | `#eb6b75` | 실패한 블록의 거터 색 |
+| `notify` | `on` \| `off` | `on` | 명령 완료 알림 + OSC 9/777 알림 |
+| `notify-threshold` | 정수 (초) | `10` | 이보다 오래 걸린 명령만 알린다 |
+| `kitty-keyboard` | `on` \| `off` | `off` | Kitty keyboard protocol (CSI u) |
+| `keybind` | `<조합> = <액션>` | (기본표) | 키바인딩 재정의. 여러 줄 가능 — 아래 참고 |
 
 색은 `#` 유무 모두 허용된다 (`#16161e` = `16161e`).
+
+## 키바인딩 재정의
+
+```
+keybind = cmd+shift+t = new-tab
+keybind = cmd+e = split-right
+```
+
+한 줄은 그 조합 하나만 바꾼다. 나머지 기본 단축키는 그대로 남으므로, 하나를
+바꾸려고 전체를 다시 적을 필요가 없다.
+
+조합에는 **`cmd`가 반드시 있어야 한다.** Cmd 없는 키는 셸로 가야 하는데,
+사용자가 그 영역을 가로채면 터미널이 망가지기 때문이다. `shift`·`opt`를
+덧붙일 수 있고, 수식자 순서와 대소문자는 상관없다. 키 이름은 `a`~`z`, `0`~`9`,
+`left`/`right`/`up`/`down`, `[`, `]`, `enter`, `space`, `tab`.
+
+액션 이름:
+
+| 분류 | 액션 |
+|---|---|
+| 탭 | `new-tab` `close-pane` `next-tab` `prev-tab` `select-tab-1` … `select-tab-9` |
+| 분할 | `split-right` `split-down` `toggle-zoom` `focus-left` `focus-right` `focus-up` `focus-down` |
+| 블록 | `jump-prev-prompt` `jump-next-prompt` `copy-last-output` |
+| 기타 | `copy` `paste` `search` `palette` `ai-generate` |
+
+해석할 수 없는 줄(모르는 키·액션, `cmd` 없음)은 조용히 무시되고 기본값이
+유지된다. Cmd+C·Cmd+V 같은 시스템 관례 키도 재정의할 수 있지만, 복사·붙여넣기가
+사라지는 것은 사용자 책임이다.
+
+## 폰트 폴백
+
+주 폰트에 없는 글리프는 자동 폴백된다: 파워라인·Nerd Font 아이콘(PUA)은
+설치된 MesloLGS NF에서, 한글은 Apple SD Gothic Neo에서, 기호는 Apple
+Symbols에서 찾는다. 그래서 `font-path`로 Nerd Font가 아닌 폰트(예: Menlo)를
+지정해도 파워라인 프롬프트 글리프는 깨지지 않는다 — MesloLGS NF가 설치돼
+있기만 하면 된다.
 
 ## 컬러 프리셋
 
@@ -72,8 +116,9 @@ selection-color = #244a33
 
 ## 아직 설정으로 못 바꾸는 것
 
-블록 상태 바 색(성공/실패/실행 중), AI 바·커맨드 팔레트 오버레이 색, 폰트 폴백
-목록, 키바인딩은 현재 코드에 고정돼 있다. 향후 설정 항목으로 열 수 있다.
+AI 바·커맨드 팔레트 오버레이 색, 검색 하이라이트 색, 폰트 폴백 목록은 현재
+코드에 고정돼 있다. Cmd 없는 키바인딩(Ctrl 조합 등)도 재정의할 수 없다 —
+셸로 가야 할 키를 앱이 가로채는 사고를 막기 위한 의도적 제한이다.
 
 탭 바·상태바 색은 직접 지정하는 대신 `background`/`foreground`에서 파생된다
 (크롬은 배경보다 어둡게, 활성 탭은 살짝 밝게). 테마 하나만 바꿔도 크롬이 함께
