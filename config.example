@@ -24,6 +24,17 @@
 # 셀 배경색·텍스트는 불투명을 유지합니다.
 # background-opacity = 0.9
 
+# 명령 완료 알림: 창이 비포커스이거나 다른 탭을 보는 중에, threshold초 이상
+# 걸린 명령이 끝나면 Dock 바운스 + 배너로 알립니다 (OSC 133 셸 통합 기반).
+# 앱이 직접 보내는 OSC 9(iTerm2)·OSC 777(rxvt) 알림도 이 키를 따릅니다.
+# notify = on
+# notify-threshold = 10
+
+# Kitty keyboard protocol (CSI u): on | off (기본 off)
+# 켜면 Neovim 등 최신 TUI가 Shift+Enter, Ctrl+I(≠Tab) 같은 키를 구분할 수
+# 있습니다. 프로토콜을 쓰지 않는 앱(zsh·fzf 등)에는 영향이 없습니다.
+# kitty-keyboard = on
+
 # 색상 (#rrggbb)
 # background = #16161e
 # foreground = #d9d9de
@@ -35,3 +46,25 @@
 # palette-1 = #e85181
 # ...
 # palette-15 = #ededed
+
+# 블록 상태 거터: 명령 블록 왼쪽의 세로 줄 (실행 중/성공/실패)
+# block-gutter = off 로 끌 수 있습니다.
+# block-gutter = on
+# block-running-color = #598cf2
+# block-ok-color = #59b875
+# block-fail-color = #eb6b75
+
+# 키바인딩 재정의: keybind = <조합> = <액션>
+#
+# 조합은 cmd가 반드시 있어야 하고(cmd 없는 키는 셸로 가야 합니다),
+# shift·opt를 덧붙일 수 있습니다. 키 이름은 a~z, 0~9, left/right/up/down,
+# [ ] enter space tab.
+#
+# 한 줄은 그 조합 하나만 바꿉니다 — 나머지 기본 단축키는 그대로입니다.
+# 액션: new-tab close-pane split-right split-down toggle-zoom next-tab
+#       prev-tab ai-generate search palette jump-prev-prompt jump-next-prompt
+#       copy copy-last-output paste focus-left focus-right focus-up
+#       focus-down select-tab-1 ~ select-tab-9
+#
+# keybind = cmd+shift+t = new-tab
+# keybind = cmd+e = split-right

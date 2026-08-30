@@ -7,11 +7,6 @@ use super::color::ansi_to_rgb;
 use super::text::FontSize;
 use super::{BgInstance, PADDING, PaneView, Renderer, TextInstance};
 
-/// 블록 상태 바 색: 실행 중 / 성공 / 실패
-const BLOCK_RUNNING: [f32; 3] = [0.35, 0.55, 0.95];
-const BLOCK_OK: [f32; 3] = [0.35, 0.72, 0.46];
-const BLOCK_FAIL: [f32; 3] = [0.92, 0.42, 0.46];
-
 impl Renderer {
     /// 페인 사각형에서 그리드 크기(열, 행)를 계산한다.
     pub fn pane_grid_size(&self, rect: crate::layout::Rect) -> (usize, usize) {
@@ -42,6 +37,10 @@ impl Renderer {
         });
 
         let term = view.term.lock();
+        // 평문 URL 매치는 그리드 좌표라 락이 살아 있는 동안만 유효하다 —
+        // 여기서 한 번 스캔하고 같은 락 안의 셀 루프에서만 소비한다.
+        // 셀마다 정규식을 돌리지 않는 것은 검색 하이라이트와 같은 관용구.
+        let urls = crate::app::links::visible_urls(&term);
         let content = term.renderable_content();
         // 스크롤백을 위로 올렸을 때: 그리드 좌표(line)는 화면 좌표(row)와
         // display_offset만큼 어긋난다.
@@ -132,8 +131,9 @@ impl Renderer {
                 });
             }
 
-            // OSC 8 하이퍼링크: 밑줄로 클릭 가능함을 표시
-            if indexed.hyperlink().is_some() {
+            // 하이퍼링크(OSC 8 또는 평문 URL): 밑줄로 클릭 가능함을 표시.
+            // 겹치면 어차피 같은 밑줄이고, 클릭 쪽에서 OSC 8이 우선한다.
+            if indexed.hyperlink().is_some() || urls.iter().any(|m| m.contains(&indexed.point)) {
                 bg_instances.push(BgInstance {
                     rect: [
                         x,
@@ -194,6 +194,9 @@ impl Renderer {
         visible_lines: i32,
         bg_instances: &mut Vec<BgInstance>,
     ) {
+        if !self.theme.block_gutter {
+            return;
+        }
         for block in blocks {
             if block.cmd_abs.is_none() {
                 continue; // 명령이 실행되지 않은 프롬프트는 표시하지 않음
@@ -206,10 +209,10 @@ impl Renderer {
             }
             let top_row = top_row.max(0);
             let color = match (block.end_abs, block.exit) {
-                (None, _) => BLOCK_RUNNING,
-                (_, Some(0)) => BLOCK_OK,
-                (_, Some(_)) => BLOCK_FAIL,
-                _ => BLOCK_OK,
+                (None, _) => self.theme.block_running,
+                (_, Some(0)) => self.theme.block_ok,
+                (_, Some(_)) => self.theme.block_fail,
+                _ => self.theme.block_ok,
             };
             bg_instances.push(BgInstance {
                 rect: [

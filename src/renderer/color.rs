@@ -13,6 +13,12 @@ pub(super) struct Theme {
     pub(super) cursor_style: crate::config::CursorStyle,
     /// 기본 배경 불투명도 (셀 배경색·텍스트는 항상 불투명 — iTerm2와 동일)
     pub(super) opacity: f32,
+    /// 블록 상태 거터를 그릴지 (`block-gutter = off`로 끌 수 있다).
+    pub(super) block_gutter: bool,
+    /// 블록 거터 색: 실행 중 / 성공 / 실패.
+    pub(super) block_running: [f32; 3],
+    pub(super) block_ok: [f32; 3],
+    pub(super) block_fail: [f32; 3],
 }
 
 impl Theme {
@@ -25,6 +31,10 @@ impl Theme {
             palette: config.palette,
             cursor_style: config.cursor_style,
             opacity: config.background_opacity,
+            block_gutter: config.block_gutter,
+            block_running: config.block_running,
+            block_ok: config.block_ok,
+            block_fail: config.block_fail,
         }
     }
 

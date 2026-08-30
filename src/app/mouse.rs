@@ -234,7 +234,7 @@ impl App {
                     }
                 }
 
-                // Cmd+클릭: 하이퍼링크(OSC 8) 열기, 없으면 블록 전체 선택
+                // Cmd+클릭: 하이퍼링크(OSC 8 → 평문 URL) 열기, 없으면 블록 전체 선택
                 if self.modifiers.state().super_key() {
                     if !self.open_hyperlink_at(self.mouse_pos) {
                         self.select_block_at(self.mouse_pos);
@@ -248,6 +248,8 @@ impl App {
         // 구분선 드래그 종료. 리사이즈 중 뗀 것이므로 선택 로직으로 흘리지 않는다.
         if button_state == ElementState::Released && self.dragging_divider.is_some() {
             self.dragging_divider = None;
+            // 비율 저장은 드래그 종료 시 1회 — 이동 중 매 픽셀마다 쓰지 않는다.
+            self.save_layout();
             return;
         }
 
@@ -393,7 +395,10 @@ impl App {
         state.window.request_redraw();
     }
 
-    /// 클릭 위치 셀에 OSC 8 하이퍼링크가 있으면 열고 true를 돌려준다.
+    /// 클릭 위치 셀에 하이퍼링크가 있으면 열고 true를 돌려준다.
+    ///
+    /// OSC 8(앱이 명시한 링크)이 평문 URL 추론보다 우선한다 — 표시 텍스트와
+    /// 실제 URI가 다른 게 OSC 8의 존재 이유라, 추론이 이기면 엉뚱한 주소가 열린다.
     fn open_hyperlink_at(&self, pos: PhysicalPosition<f64>) -> bool {
         let Some(state) = &self.state else {
             return false;
@@ -407,7 +412,10 @@ impl App {
         let point = Self::grid_point(pane, rect, state, pos).point;
         let uri = {
             let term = pane.session.term.lock();
-            term.grid()[point].hyperlink().map(|h| h.uri().to_string())
+            term.grid()[point]
+                .hyperlink()
+                .map(|h| h.uri().to_string())
+                .or_else(|| super::links::url_at(&term, point))
         };
         if let Some(uri) = uri {
             // macOS `open`으로 기본 앱에서 연다

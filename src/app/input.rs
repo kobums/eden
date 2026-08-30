@@ -5,16 +5,20 @@
 use alacritty_terminal::grid::Scroll;
 use winit::event::{ElementState, Ime, KeyEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 use super::App;
+use super::action::Chord;
 use super::ai_bar::AiState;
-use super::palette::Palette;
-use crate::layout::{Pane, SplitDir};
+use super::kitty_key;
+use crate::layout::Pane;
 
 impl App {
     pub(super) fn on_key(&mut self, event: KeyEvent, event_loop: &ActiveEventLoop) {
         if event.state != ElementState::Pressed {
+            // release는 kitty 프로토콜(REPORT_EVENT_TYPES)이 요구할 때만
+            // 의미가 있다 — 판정은 인코더가 term 모드를 보고 한다.
+            self.on_key_release(&event);
             return;
         }
         let mods = self.modifiers.state();
@@ -46,14 +50,49 @@ impl App {
             return;
         }
 
-        if mods.super_key() {
+        // 수식키 자신(Cmd 등)의 press는 단축키가 아니다 — kitty
+        // REPORT_ALL_KEYS_AS_ESC 모드가 이 이벤트를 요구하므로 아래로 흘린다.
+        if mods.super_key() && !kitty_key::is_modifier_key(&event.logical_key) {
             self.on_command_key(&event, mods, event_loop);
             return;
         }
 
-        if let Some(bytes) = key_to_bytes(&event, mods) {
-            let state = self.state.as_ref().unwrap();
-            let pane = state.focused_pane();
+        self.write_key(&event, mods);
+    }
+
+    /// 키 release. press와 같은 가드를 거친다 — IME 조합 중이거나 오버레이가
+    /// 열려 있으면 release도 PTY로 새면 안 되고, Cmd 단축키로 소비된 press의
+    /// release도 마찬가지다 (수식키 자신의 release는 예외 — kitty
+    /// REPORT_ALL_KEYS_AS_ESC가 요구한다).
+    fn on_key_release(&mut self, event: &KeyEvent) {
+        if self.preedit.is_some() {
+            return;
+        }
+        if self.palette.is_some() || !matches!(self.ai, AiState::Idle) || self.search.is_some() {
+            return;
+        }
+        let mods = self.modifiers.state();
+        if mods.super_key() && !kitty_key::is_modifier_key(&event.logical_key) {
+            return;
+        }
+        self.write_key(event, mods);
+    }
+
+    /// 키 이벤트를 PTY 바이트로 변환해 보낸다. kitty 프로토콜 플래그가 서
+    /// 있으면 kitty 인코더가, 아니면 기존 `key_to_bytes`가 처리한다.
+    fn write_key(&mut self, event: &KeyEvent, mods: ModifiersState) {
+        let state = self.state.as_ref().unwrap();
+        let pane = state.focused_pane();
+        // 모드는 매 키마다 읽는다 — 대체 스크린 진입/이탈 시 kitty 모드가
+        // 갈리므로 캐시하면 즉시 어긋난다. (문장 끝에서 락이 풀린다.)
+        let mode = *pane.session.term.lock().mode();
+        let input = kitty_key::KeyInput::from_winit(event);
+        let bytes = match kitty_key::encode(&input, mods, mode) {
+            kitty_key::Encoded::Bytes(bytes) => Some(bytes),
+            kitty_key::Encoded::Legacy => key_to_bytes(event, mods),
+            kitty_key::Encoded::Nothing => None,
+        };
+        if let Some(bytes) = bytes {
             Self::on_user_input(pane);
             pane.session.write(bytes);
             state.window.request_redraw();
@@ -87,7 +126,7 @@ impl App {
         true
     }
 
-    /// Cmd 조합 앱 단축키.
+    /// Cmd 조합 앱 단축키. 키맵(기본표 + 사용자 재정의)을 조회해 액션을 낸다.
     fn on_command_key(
         &mut self,
         event: &KeyEvent,
@@ -99,58 +138,13 @@ impl App {
         let PhysicalKey::Code(code) = event.physical_key else {
             return;
         };
-        // Cmd+Option+화살표: 페인 포커스 이동
-        if mods.alt_key() {
-            match code {
-                KeyCode::ArrowLeft => self.move_focus(-1.0, 0.0),
-                KeyCode::ArrowRight => self.move_focus(1.0, 0.0),
-                KeyCode::ArrowUp => self.move_focus(0.0, -1.0),
-                KeyCode::ArrowDown => self.move_focus(0.0, 1.0),
-                _ => {}
-            }
-            return;
-        }
-        if let Some(n) = tab_digit(code) {
-            self.switch_tab(n - 1);
-            return;
-        }
-        match code {
-            // 커맨드 팔레트 (Cmd+Shift+P)
-            KeyCode::KeyP if mods.shift_key() => {
-                self.palette = Some(Palette {
-                    query: String::new(),
-                    selected: 0,
-                });
-                self.state.as_ref().unwrap().window.request_redraw();
-            }
-            // AI 명령 생성 바
-            KeyCode::KeyK if !mods.shift_key() => {
-                self.ai = AiState::Input(String::new());
-                self.state.as_ref().unwrap().window.request_redraw();
-            }
-            // 스크롤백 검색 (열려 있으면 다음 매치)
-            KeyCode::KeyF => self.toggle_search(),
-            // 탭
-            KeyCode::KeyT if !mods.shift_key() => self.new_tab(),
-            KeyCode::KeyW if !mods.shift_key() => {
-                let focused = self.state.as_ref().unwrap().active_tab().focused;
-                self.close_pane(focused, true, event_loop);
-            }
-            KeyCode::BracketRight if mods.shift_key() => self.cycle_tab(1),
-            KeyCode::BracketLeft if mods.shift_key() => self.cycle_tab(-1),
-            // 분할
-            KeyCode::KeyD if mods.shift_key() => self.split_pane(SplitDir::Column),
-            KeyCode::KeyD => self.split_pane(SplitDir::Row),
-            // 페인 줌 (tmux의 prefix+z)
-            KeyCode::KeyZ => self.toggle_zoom(),
-            // 복사/붙여넣기
-            KeyCode::KeyC if mods.shift_key() => self.copy_last_output(),
-            KeyCode::KeyC => self.copy_selection(),
-            KeyCode::KeyV if !mods.shift_key() => self.paste(),
-            // OSC 133 마크 기반 프롬프트 점프
-            KeyCode::ArrowUp => self.jump_to_prompt(-1),
-            KeyCode::ArrowDown => self.jump_to_prompt(1),
-            _ => {}
+        let chord = Chord {
+            code,
+            shift: mods.shift_key(),
+            alt: mods.alt_key(),
+        };
+        if let Some(action) = self.keymap.get(chord) {
+            self.run_action(action, event_loop);
         }
     }
 
@@ -189,22 +183,6 @@ impl App {
         term.selection = None;
         term.scroll_display(Scroll::Bottom);
     }
-}
-
-/// Cmd+숫자 탭 전환용: 물리 숫자 키 → 1..=9.
-fn tab_digit(code: KeyCode) -> Option<usize> {
-    Some(match code {
-        KeyCode::Digit1 => 1,
-        KeyCode::Digit2 => 2,
-        KeyCode::Digit3 => 3,
-        KeyCode::Digit4 => 4,
-        KeyCode::Digit5 => 5,
-        KeyCode::Digit6 => 6,
-        KeyCode::Digit7 => 7,
-        KeyCode::Digit8 => 8,
-        KeyCode::Digit9 => 9,
-        _ => return None,
-    })
 }
 
 /// 키 입력을 PTY로 보낼 바이트 시퀀스로 변환한다.

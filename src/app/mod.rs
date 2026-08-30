@@ -3,18 +3,27 @@
 //! 입력 처리와 각 오버레이는 하위 모듈로 나뉜다.
 //! - [`input`] 키보드·IME → PTY 바이트
 //! - [`mouse`] 클릭·드래그 선택·휠·하이퍼링크
+//! - [`links`] 평문 URL 자동 감지 (밑줄·Cmd+클릭)
 //! - [`clipboard`] 복사/붙여넣기
 //! - [`palette`] 커맨드 팔레트 (Cmd+Shift+P)
 //! - [`search`] 스크롤백 검색 (Cmd+F)
 //! - [`ai_bar`] AI 명령 생성 바 (Cmd+K)
 //! - [`quake`] Ctrl+` 전역 드롭다운
 //! - [`status`] 하단 상태바 문자열
+//! - [`layout_persist`] 탭·페인 구조를 layout.json에 저장/복원
+//! - [`action`] 앱 액션 + 키맵 (키바인딩과 팔레트가 공유)
 
+mod action;
 mod ai_bar;
 mod clipboard;
 mod input;
+mod kitty_key;
+mod layout_persist;
+// 렌더러가 밑줄을 그릴 때도 쓰므로 crate에 공개한다 (search와 같은 이유).
+pub(crate) mod links;
 mod mouse;
 mod mouse_report;
+mod notify;
 mod palette;
 mod quake;
 pub(crate) mod search;
@@ -144,12 +153,21 @@ pub struct App {
     palette: Option<Palette>,
     /// 스크롤백 검색 상태 (Cmd+F). None이면 닫힌 것.
     search: Option<search::Search>,
+    /// Cmd 조합 → 액션 조회 표 (기본표 + 설정의 `keybind` 재정의).
+    keymap: action::Keymap,
     /// Quake 전역 핫키 매니저 (살아있어야 핫키가 유지됨)
     _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
     /// Quake 드롭다운으로 숨겨진 상태인지
     quake_hidden: bool,
+    /// 창 포커스 여부 (WindowEvent::Focused). 명령 완료·OSC 9/777 알림의
+    /// "보고 있지 않을 때만 알림" 조건에 쓰인다.
+    window_focused: bool,
     /// 상태바용 시스템 지표 (틱마다 갱신)
     sys: sysinfo::System,
+    /// 데몬 boot id (시작 시각). layout.json에 함께 저장해, 데몬이 재시작해
+    /// 세션 ID가 재발급됐을 때 옛 파일이 오매칭되는 것을 막는다.
+    /// 구버전 데몬(boot id 미지원)이면 None.
+    daemon_boot: Option<u64>,
 
     // 마우스 상태
     mouse_pos: PhysicalPosition<f64>,
@@ -172,20 +190,28 @@ pub struct App {
 
 impl App {
     pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
+        // 키맵이 설정의 `keybind` 줄을 봐야 하므로 먼저 로드한다.
+        let config = config::Config::load();
+        let keymap = action::Keymap::from_config(&config.keybinds);
         Self {
             proxy,
             state: None,
             modifiers: Modifiers::default(),
             clipboard: None,
             next_pane_id: 0,
-            config: config::Config::load(),
+            config,
             ai: AiState::Idle,
             ai_seq: 0,
             palette: None,
             search: None,
+            keymap,
             _hotkey: None,
             quake_hidden: false,
+            // 창 생성 직후 Focused(true)가 오지만, 그 전에 attach 리플레이
+            // 이벤트가 먼저 도착해도 알림이 새지 않도록 포커스로 시작한다.
+            window_focused: true,
             sys: sysinfo::System::new(),
+            daemon_boot: None,
             mouse_pos: PhysicalPosition::new(0.0, 0.0),
             left_button_down: false,
             last_click_at: None,
@@ -208,6 +234,7 @@ impl App {
             session::EventProxy::new(self.proxy.clone(), id),
             ws,
             self.config.scrollback,
+            self.config.kitty_keyboard,
         );
         Pane {
             id,
@@ -230,6 +257,7 @@ impl App {
         state.active = state.tabs.len() - 1;
         self.preedit = None;
         state.window.request_redraw();
+        self.save_layout();
     }
 
     /// 데몬의 기존 세션 ID에 붙어 새 탭으로 복원한다.
@@ -242,6 +270,7 @@ impl App {
             session_id,
             ws,
             self.config.scrollback,
+            self.config.kitty_keyboard,
         ) else {
             return; // 세션이 이미 사라졌으면 건너뛴다
         };
@@ -281,6 +310,7 @@ impl App {
             state.relayout_tab(active);
             self.preedit = None;
             state.window.request_redraw();
+            self.save_layout();
         }
     }
 
@@ -306,6 +336,9 @@ impl App {
         if is_last_pane {
             state.tabs.remove(tab_index);
             if state.tabs.is_empty() {
+                // 마지막 탭까지 닫고 종료하는 경우에도 빈 구조를 저장한다 —
+                // 다음 실행이 죽은 세션이 든 옛 파일을 읽지 않게.
+                self.save_layout();
                 event_loop.exit();
                 return;
             }
@@ -323,6 +356,7 @@ impl App {
         }
         self.preedit = None;
         state.window.request_redraw();
+        self.save_layout();
     }
 
     fn switch_tab(&mut self, index: usize) {
@@ -333,6 +367,8 @@ impl App {
             let title = state.focused_pane().title.clone();
             state.window.set_title(&title);
             state.window.request_redraw();
+            // 활성 탭도 복원 대상이다 (재시작 시 같은 탭이 앞에 오도록).
+            self.save_layout();
         }
     }
 
@@ -583,6 +619,17 @@ impl ApplicationHandler<AppEvent> for App {
                 result,
             } => self.on_ai_result(pane_id, seq, result),
             AppEvent::Term(pane_id, event) => self.on_term_event(pane_id, event, event_loop),
+            // 명령 완료 / OSC 9·777 알림 — 조건 판단은 여기(메인 스레드)서 한다.
+            AppEvent::CommandFinished {
+                pane_id,
+                duration,
+                exit,
+            } => self.on_command_finished(pane_id, duration, exit),
+            AppEvent::Notify {
+                pane_id,
+                title,
+                body,
+            } => self.on_osc_notify(pane_id, title, body),
         }
     }
 
@@ -597,6 +644,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // 알림 조건("보고 있지 않을 때만")에 쓰인다. 포커스를 되찾았을 때
+            // Dock 바운스를 멈추는 것은 시스템이 알아서 한다.
+            WindowEvent::Focused(focused) => self.window_focused = focused,
             WindowEvent::ModifiersChanged(modifiers) => {
                 // Cmd를 누르고 있는 동안 IME를 끈다. 한글 조합(preedit) 중에는
                 // winit(macOS)이 keyDown을 IME(interpretKeyEvents)로만 보내고
@@ -606,7 +656,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.modifiers = modifiers;
                 let is_super = modifiers.state().super_key();
                 if was_super != is_super {
-                    self.state.as_ref().unwrap().window.set_ime_allowed(!is_super);
+                    self.state
+                        .as_ref()
+                        .unwrap()
+                        .window
+                        .set_ime_allowed(!is_super);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -644,22 +698,175 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 impl App {
-    /// 데몬에 살아있는 세션이 있으면 탭으로 복원하고, 없으면 새 탭을 연다.
+    /// 현재 탭/페인 구조를 layout.json에 저장한다.
+    ///
+    /// 구조가 변할 때마다 즉시 호출한다 (split/close/new_tab/탭 전환/드래그
+    /// 리사이즈 종료). 종료 훅에 걸지 않는 이유: 크래시·강제 종료에서도
+    /// 마지막 구조가 남아야 세션 지속성의 목적에 맞다.
+    pub(super) fn save_layout(&self) {
+        let Some(state) = &self.state else { return };
+        let tabs: Vec<layout_persist::TabLayout> = state
+            .tabs
+            .iter()
+            .filter_map(|t| layout_persist::snapshot(&t.root, t.focused))
+            .collect();
+        layout_persist::save(&layout_persist::to_json(
+            &tabs,
+            state.active,
+            self.daemon_boot,
+        ));
+    }
+
+    /// 데몬에 살아있는 세션이 있으면 layout.json의 분할 구조대로 복원하고,
+    /// 파일이 없거나 깨졌거나 미래 버전이면 세션당 탭 1개로 폴백한다.
+    /// 세션이 하나도 없으면 새 탭을 연다.
     fn restore_or_create_tabs(&mut self) {
         let _ = mux::ensure_daemon();
-        let surviving = session::Session::list();
+        let (surviving, boot) = session::Session::list();
+        self.daemon_boot = boot;
         if surviving.is_empty() {
             self.new_tab();
             return;
         }
-        for id in surviving {
-            self.attach_tab(id);
+
+        let alive: std::collections::HashSet<u64> = surviving.iter().copied().collect();
+        let plans =
+            layout_persist::load().and_then(|v| layout_persist::from_json(&v, &alive, boot));
+        match plans {
+            Some((tab_plans, active)) => {
+                // attach가 실패해 탭이 통째로 사라지면 인덱스가 당겨지므로,
+                // 활성 탭은 "그 계획이 실제로 붙은 위치"로 다시 계산한다.
+                let mut new_active = 0;
+                for (i, plan) in tab_plans.into_iter().enumerate() {
+                    let attached = self.attach_tab_plan(plan);
+                    if attached && i == active {
+                        new_active = self.state.as_ref().unwrap().tabs.len() - 1;
+                    }
+                }
+                if let Some(state) = self.state.as_mut() {
+                    state.active = new_active.min(state.tabs.len().saturating_sub(1));
+                }
+            }
+            None => {
+                for id in surviving {
+                    self.attach_tab(id);
+                }
+                if let Some(state) = self.state.as_mut() {
+                    state.active = 0;
+                }
+            }
         }
+
         if self.state.as_ref().unwrap().tabs.is_empty() {
             // 모든 세션이 attach 직전에 사라졌으면 새로 만든다
             self.new_tab();
-        } else {
-            self.state.as_mut().unwrap().active = 0;
+        }
+        // 가지치기·attach 실패가 반영된 실제 구조로 파일을 되쓴다 —
+        // 죽은 세션이 파일에 계속 남지 않게.
+        self.save_layout();
+    }
+
+    /// 복원 계획(세션 ID 트리) 하나를 탭으로 붙인다. 탭이 만들어졌으면 true.
+    ///
+    /// list()와 attach 사이에 세션이 죽을 수 있으므로, attach에 실패한 leaf는
+    /// 죽은 것으로 간주하고 가지치기와 같은 접기 규칙을 적용한다.
+    fn attach_tab_plan(&mut self, plan: layout_persist::TabLayout) -> bool {
+        let Some(state) = &self.state else {
+            return false;
+        };
+        // 각 페인을 **최종 크기로** 붙인다. 전체 크기로 붙였다가 relayout으로
+        // 줄이면, 그 사이에 재생된 리플레이가 넓은 폭 기준으로 그려진 뒤 좁은
+        // 폭으로 리플로우돼 프롬프트가 두 번 그려진 것처럼 보인다(실측).
+        // 세션 ID 트리로도 배치를 계산할 수 있어서(PaneNode가 페이로드
+        // 제네릭) attach 전에 각 leaf의 크기를 알 수 있다.
+        let content = state.content_rect();
+        let mut rects = Vec::new();
+        plan.root.layout(content, &mut rects);
+        let sizes: Vec<(u64, WindowSize)> = rects
+            .iter()
+            .map(|&(id, rect)| (id as u64, state.window_size(rect)))
+            .collect();
+        // 배치에 없는 leaf(있을 수 없지만)는 콘텐츠 전체 크기로 폴백한다.
+        let fallback = state.window_size(content);
+        let mut attached: Vec<(u64, usize)> = Vec::new();
+        let Some(root) = self.build_pane_tree(plan.root, &sizes, fallback, &mut attached) else {
+            return false; // 전 leaf attach 실패 → 탭 버림
+        };
+        let focused = attached
+            .iter()
+            .find(|(sid, _)| *sid == plan.focused)
+            .map(|(_, pane_id)| *pane_id)
+            // 포커스 세션이 attach에 실패했으면 첫 leaf로 폴백.
+            .or_else(|| root.first_id());
+        let Some(focused) = focused else { return false };
+
+        let state = self.state.as_mut().unwrap();
+        state.tabs.push(Tab {
+            root,
+            focused,
+            zoomed: false,
+        });
+        state.relayout_tab(state.tabs.len() - 1);
+        state.window.request_redraw();
+        true
+    }
+
+    /// 세션 ID 트리를 걸으며 leaf마다 attach해 런타임 페인 트리를 만든다.
+    ///
+    /// `sizes`는 세션 ID별 최종 페인 크기다 — 리플레이가 처음부터 맞는 폭으로
+    /// 그려지도록 attach 시점에 넘긴다. `attached`에 (세션 ID, 페인 ID) 대응을
+    /// 쌓는다 (포커스 환산용).
+    fn build_pane_tree(
+        &mut self,
+        node: PaneNode<u64>,
+        sizes: &[(u64, WindowSize)],
+        fallback: WindowSize,
+        attached: &mut Vec<(u64, usize)>,
+    ) -> Option<PaneNode<Pane>> {
+        match node {
+            PaneNode::Empty => None,
+            PaneNode::Leaf(session_id) => {
+                let id = self.next_pane_id;
+                let ws = sizes
+                    .iter()
+                    .find(|(sid, _)| *sid == session_id)
+                    .map(|(_, ws)| *ws)
+                    .unwrap_or(fallback);
+                let session = session::Session::attach(
+                    session::EventProxy::new(self.proxy.clone(), id),
+                    session_id,
+                    ws,
+                    self.config.scrollback,
+                    self.config.kitty_keyboard,
+                )?;
+                self.next_pane_id += 1;
+                attached.push((session_id, id));
+                Some(PaneNode::Leaf(Pane {
+                    id,
+                    session,
+                    title: "zsh".to_string(),
+                }))
+            }
+            PaneNode::Split {
+                dir,
+                ratio,
+                first,
+                second,
+            } => {
+                let first = self.build_pane_tree(*first, sizes, fallback, attached);
+                let second = self.build_pane_tree(*second, sizes, fallback, attached);
+                match (first, second) {
+                    (Some(a), Some(b)) => Some(PaneNode::Split {
+                        dir,
+                        ratio,
+                        first: Box::new(a),
+                        second: Box::new(b),
+                    }),
+                    // 한쪽이 죽었으면 남은 자식으로 접는다 (remove와 동일 규칙).
+                    (Some(a), None) | (None, Some(a)) => Some(a),
+                    (None, None) => None,
+                }
+            }
         }
     }
 

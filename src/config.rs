@@ -30,6 +30,29 @@ pub struct Config {
     /// 배경 불투명도 0.2~1.0 (1.0 = 불투명, iTerm2 Transparency 0.0과 동일).
     /// iTerm2처럼 기본 배경에만 적용되고 셀 배경색·텍스트는 불투명을 유지한다.
     pub background_opacity: f32,
+    /// 명령 완료 알림 + OSC 9/777 알림 (기본 on).
+    pub notify: bool,
+    /// 명령 완료 알림의 최소 소요 시간 (초). 이보다 빨리 끝난 명령은 조용히
+    /// 넘어간다 — `ls` 같은 짧은 명령마다 울리면 알림이 무의미해진다.
+    pub notify_threshold: u64,
+    /// Kitty keyboard protocol (CSI u). 인코더는 플래그 5종을 전부 구현했지만
+    /// dogfooding 기간의 탈출구로 기본 off — 켜기 전까지는 파서가 프로토콜
+    /// 시퀀스를 무시하므로 앱에 지원을 advertise하지 않는다.
+    pub kitty_keyboard: bool,
+    /// 블록 상태 거터(왼쪽 세로 줄)를 그릴지.
+    pub block_gutter: bool,
+    /// 실행 중인 블록의 거터 색.
+    pub block_running: [f32; 3],
+    /// 성공(exit 0)한 블록의 거터 색.
+    pub block_ok: [f32; 3],
+    /// 실패한 블록의 거터 색.
+    pub block_fail: [f32; 3],
+    /// 사용자가 재정의한 키바인딩 (원문 그대로: 코드 문자열, 액션 이름).
+    ///
+    /// 여기서 파싱까지 하지 않는 이유는 층 분리다 — 키 코드·액션은 winit과
+    /// 앱 계층의 개념이라 설정 파서가 알 필요가 없다. 해석과 검증은
+    /// `app::action`이 기본 맵을 만들 때 한 번에 한다.
+    pub keybinds: Vec<(String, String)>,
 }
 
 /// 기본 16색 팔레트 (Catppuccin 계열).
@@ -65,6 +88,16 @@ impl Default for Config {
             palette: DEFAULT_PALETTE,
             cursor_style: CursorStyle::Block,
             background_opacity: 1.0,
+            notify: true,
+            notify_threshold: 10,
+            kitty_keyboard: false,
+            block_gutter: true,
+            // 파랑(실행 중)·초록(성공)·빨강(실패). Phase 4부터 렌더러에
+            // 하드코딩돼 있던 값을 그대로 기본값으로 옮긴 것이다.
+            block_running: [0.35, 0.55, 0.95],
+            block_ok: [0.35, 0.72, 0.46],
+            block_fail: [0.92, 0.42, 0.46],
+            keybinds: Vec::new(),
         }
     }
 }
@@ -169,11 +202,54 @@ impl Config {
                     _ => CursorStyle::Block,
                 };
             }
+            "notify" => match value.to_lowercase().as_str() {
+                "on" => self.notify = true,
+                "off" => self.notify = false,
+                _ => {} // 잘못된 값은 기본값 유지
+            },
+            "notify-threshold" => {
+                if let Ok(v) = value.parse::<u64>() {
+                    self.notify_threshold = v;
+                }
+            }
             "background-opacity" => {
                 if let Ok(v) = value.parse::<f32>()
                     && (0.2..=1.0).contains(&v)
                 {
                     self.background_opacity = v;
+                }
+            }
+            "kitty-keyboard" => match value.to_lowercase().as_str() {
+                "on" | "true" => self.kitty_keyboard = true,
+                "off" | "false" => self.kitty_keyboard = false,
+                _ => {} // 알 수 없는 값은 무시 — 기본값 유지
+            },
+            "block-gutter" => match value.to_lowercase().as_str() {
+                "on" | "true" => self.block_gutter = true,
+                "off" | "false" => self.block_gutter = false,
+                _ => {}
+            },
+            "block-running-color" => {
+                if let Some(c) = parse_hex(value) {
+                    self.block_running = c;
+                }
+            }
+            "block-ok-color" => {
+                if let Some(c) = parse_hex(value) {
+                    self.block_ok = c;
+                }
+            }
+            "block-fail-color" => {
+                if let Some(c) = parse_hex(value) {
+                    self.block_fail = c;
+                }
+            }
+            // `keybind = cmd+t = new-tab` — 값 안에 두 번째 `=`가 있다.
+            // 검증 없이 원문만 모은다 (해석은 app::action).
+            "keybind" => {
+                if let Some((chord, action)) = value.split_once('=') {
+                    self.keybinds
+                        .push((chord.trim().to_string(), action.trim().to_string()));
                 }
             }
             // palette-0 ~ palette-15: 16색 ANSI 팔레트
@@ -303,6 +379,31 @@ mod tests {
     }
 
     #[test]
+    fn notify_accepts_on_off_and_keeps_default_otherwise() {
+        assert!(Config::parse("notify = on").notify);
+        assert!(!Config::parse("notify = off").notify);
+        assert!(!Config::parse("notify = OFF").notify, "대소문자 무시");
+        assert!(Config::parse("notify = nonsense").notify, "기본값(on) 유지");
+        assert!(Config::default().notify, "기본 on");
+    }
+
+    #[test]
+    fn notify_threshold_parses_seconds() {
+        assert_eq!(Config::parse("notify-threshold = 30").notify_threshold, 30);
+        assert_eq!(
+            Config::parse("notify-threshold = 0").notify_threshold,
+            0,
+            "0은 '모든 명령 완료를 알림'이라는 유효한 선택"
+        );
+        assert_eq!(
+            Config::parse("notify-threshold = -5").notify_threshold,
+            10,
+            "음수·비숫자는 기본값 유지"
+        );
+        assert_eq!(Config::parse("notify-threshold = abc").notify_threshold, 10);
+    }
+
+    #[test]
     fn scrollback_clamps_at_one_million() {
         assert_eq!(Config::parse("scrollback = 500").scrollback, 500);
         assert_eq!(Config::parse("scrollback = 99999999").scrollback, 1_000_000);
@@ -346,6 +447,22 @@ font-size = 20
         );
         assert_eq!(c.font_size, 20.0);
         assert_eq!(c.scrollback, 777, "키·값 주변 공백은 trim");
+    }
+
+    #[test]
+    fn kitty_keyboard_defaults_off_and_parses_on_off() {
+        assert!(
+            !Config::default().kitty_keyboard,
+            "dogfooding 전까지 기본 off"
+        );
+        assert!(Config::parse("kitty-keyboard = on").kitty_keyboard);
+        assert!(Config::parse("kitty-keyboard = ON").kitty_keyboard);
+        assert!(Config::parse("kitty-keyboard = true").kitty_keyboard);
+        assert!(!Config::parse("kitty-keyboard = off").kitty_keyboard);
+        assert!(
+            !Config::parse("kitty-keyboard = maybe").kitty_keyboard,
+            "알 수 없는 값은 기본값 유지"
+        );
     }
 
     #[test]

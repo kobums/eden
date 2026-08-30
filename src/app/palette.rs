@@ -3,40 +3,27 @@
 use winit::event_loop::ActiveEventLoop;
 
 use super::App;
+use super::action::Action;
 use super::ai_bar::AiState;
 use crate::layout::SplitDir;
 
-/// 커맨드 팔레트 액션.
-#[derive(Clone, Copy)]
-pub(super) enum PaletteAction {
-    NewTab,
-    CloseTab,
-    SplitRight,
-    SplitDown,
-    ToggleZoom,
-    NextTab,
-    PrevTab,
-    AiGenerate,
-    Search,
-    JumpPrev,
-    JumpNext,
-    CopyLastOutput,
-}
-
-/// 팔레트에 표시되는 액션 목록 (이름, 동작).
-const PALETTE_ACTIONS: &[(&str, PaletteAction)] = &[
-    ("New Tab", PaletteAction::NewTab),
-    ("Close Tab", PaletteAction::CloseTab),
-    ("Split Right", PaletteAction::SplitRight),
-    ("Split Down", PaletteAction::SplitDown),
-    ("Toggle Zoom Pane", PaletteAction::ToggleZoom),
-    ("Next Tab", PaletteAction::NextTab),
-    ("Previous Tab", PaletteAction::PrevTab),
-    ("AI: Generate Command", PaletteAction::AiGenerate),
-    ("Search Scrollback", PaletteAction::Search),
-    ("Jump to Previous Prompt", PaletteAction::JumpPrev),
-    ("Jump to Next Prompt", PaletteAction::JumpNext),
-    ("Copy Last Command Output", PaletteAction::CopyLastOutput),
+/// 팔레트에 표시되는 액션 목록 (표시 이름, 동작).
+///
+/// 액션 자체는 키바인딩과 공유한다([`Action`]) — 예전에는 팔레트가 자기
+/// enum을 따로 갖고 있어 단축키 표와 조용히 갈라질 수 있었다.
+const PALETTE_ACTIONS: &[(&str, Action)] = &[
+    ("New Tab", Action::NewTab),
+    ("Close Pane", Action::ClosePane),
+    ("Split Right", Action::SplitRight),
+    ("Split Down", Action::SplitDown),
+    ("Toggle Zoom Pane", Action::ToggleZoom),
+    ("Next Tab", Action::NextTab),
+    ("Previous Tab", Action::PrevTab),
+    ("AI: Generate Command", Action::AiGenerate),
+    ("Search Scrollback", Action::Search),
+    ("Jump to Previous Prompt", Action::JumpPrevPrompt),
+    ("Jump to Next Prompt", Action::JumpNextPrompt),
+    ("Copy Last Command Output", Action::CopyLastOutput),
 ];
 
 /// 커맨드 팔레트 상태.
@@ -47,7 +34,7 @@ pub(super) struct Palette {
 
 impl App {
     /// 현재 쿼리로 필터된 팔레트 액션들.
-    pub(super) fn palette_matches(query: &str) -> Vec<(&'static str, PaletteAction)> {
+    pub(super) fn palette_matches(query: &str) -> Vec<(&'static str, Action)> {
         let q = query.to_lowercase();
         PALETTE_ACTIONS
             .iter()
@@ -56,31 +43,46 @@ impl App {
             .collect()
     }
 
-    /// 선택된 팔레트 액션을 실행한다.
-    pub(super) fn run_palette_action(
-        &mut self,
-        action: PaletteAction,
-        event_loop: &ActiveEventLoop,
-    ) {
+    /// 액션 하나를 실행한다. 키바인딩과 팔레트가 함께 쓰는 유일한 실행 지점이다.
+    ///
+    /// 여기서 각 메서드를 부르기만 하고 상태 변경은 메서드 안에 남겨 둔다 —
+    /// 레이아웃 저장(Phase 19) 같은 부수 효과가 메서드 본문에 걸려 있어서,
+    /// 로직을 이쪽으로 끌어오면 팔레트로 실행할 때만 훅이 빠지게 된다.
+    pub(super) fn run_action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
-            PaletteAction::NewTab => self.new_tab(),
-            PaletteAction::CloseTab => {
+            Action::NewTab => self.new_tab(),
+            Action::ClosePane => {
                 let focused = self.state.as_ref().unwrap().active_tab().focused;
                 self.close_pane(focused, true, event_loop);
             }
-            PaletteAction::SplitRight => self.split_pane(SplitDir::Row),
-            PaletteAction::SplitDown => self.split_pane(SplitDir::Column),
-            PaletteAction::ToggleZoom => self.toggle_zoom(),
-            PaletteAction::NextTab => self.cycle_tab(1),
-            PaletteAction::PrevTab => self.cycle_tab(-1),
-            PaletteAction::AiGenerate => {
+            Action::SplitRight => self.split_pane(SplitDir::Row),
+            Action::SplitDown => self.split_pane(SplitDir::Column),
+            Action::ToggleZoom => self.toggle_zoom(),
+            Action::NextTab => self.cycle_tab(1),
+            Action::PrevTab => self.cycle_tab(-1),
+            Action::AiGenerate => {
                 self.ai = AiState::Input(String::new());
                 self.state.as_ref().unwrap().window.request_redraw();
             }
-            PaletteAction::Search => self.toggle_search(),
-            PaletteAction::JumpPrev => self.jump_to_prompt(-1),
-            PaletteAction::JumpNext => self.jump_to_prompt(1),
-            PaletteAction::CopyLastOutput => self.copy_last_output(),
+            Action::Search => self.toggle_search(),
+            Action::Palette => {
+                self.palette = Some(Palette {
+                    query: String::new(),
+                    selected: 0,
+                });
+                self.state.as_ref().unwrap().window.request_redraw();
+            }
+            Action::JumpPrevPrompt => self.jump_to_prompt(-1),
+            Action::JumpNextPrompt => self.jump_to_prompt(1),
+            Action::Copy => self.copy_selection(),
+            Action::CopyLastOutput => self.copy_last_output(),
+            Action::Paste => self.paste(),
+            Action::FocusLeft => self.move_focus(-1.0, 0.0),
+            Action::FocusRight => self.move_focus(1.0, 0.0),
+            Action::FocusUp => self.move_focus(0.0, -1.0),
+            Action::FocusDown => self.move_focus(0.0, 1.0),
+            // 표시용 번호는 1부터, 내부 인덱스는 0부터.
+            Action::SelectTab(n) => self.switch_tab(n - 1),
         }
     }
 
@@ -120,7 +122,7 @@ impl App {
                 let p = self.palette.take().unwrap();
                 let matches = Self::palette_matches(&p.query);
                 if let Some((_, action)) = matches.get(p.selected).copied() {
-                    self.run_palette_action(action, event_loop);
+                    self.run_action(action, event_loop);
                 }
             }
             Key::Named(NamedKey::ArrowDown) => self.move_palette_selection(1),

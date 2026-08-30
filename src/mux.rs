@@ -31,7 +31,7 @@ const KILL: u8 = 0x06; // (empty) — 현재 세션 종료
 // 데몬 → 클라이언트
 const ATTACHED: u8 = 0x81; // id u64
 const OUTPUT: u8 = 0x82; // raw bytes
-const SESSION_LIST: u8 = 0x83; // count u32, ids u64...
+const SESSION_LIST: u8 = 0x83; // count u32, ids u64..., boot u64 (꼬리 필드 — 구버전 데몬 응답에는 없다)
 const EXIT: u8 = 0x85; // (empty) — 셸 종료
 
 /// mux 제어 소켓 경로.
@@ -134,13 +134,18 @@ impl MuxClient {
         ))
     }
 
-    /// 살아있는 세션 ID 목록을 조회한다.
-    pub fn list() -> io::Result<Vec<u64>> {
+    /// 살아있는 세션 ID 목록과 데몬 boot id를 조회한다.
+    ///
+    /// boot id는 layout.json이 "이 세션 ID들이 어느 데몬 세대의 것인지"를
+    /// 대조하는 데 쓴다 — 세션 ID는 데몬 재시작 시 1부터 재발급되기 때문.
+    /// 구버전 데몬은 boot id를 보내지 않는다 → None (대조를 포기한다).
+    /// 이 하위호환이 없으면 데몬 업그레이드 중(구버전 데몬 + 신버전 GUI)에 깨진다.
+    pub fn list() -> io::Result<(Vec<u64>, Option<u64>)> {
         let mut stream = connect()?;
         write_frame(&mut stream, LIST, &[])?;
         let (tag, payload) = read_frame(&mut stream)?;
         if tag != SESSION_LIST || payload.len() < 4 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
         let count = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
         let mut ids = Vec::with_capacity(count);
@@ -152,10 +157,12 @@ impl MuxClient {
                 ));
             }
         }
-        Ok(ids)
+        let tail = 4 + count * 8;
+        let boot = (payload.len() >= tail + 8)
+            .then(|| u64::from_le_bytes(payload[tail..tail + 8].try_into().unwrap()));
+        Ok((ids, boot))
     }
 
-    #[allow(dead_code)] // 세션 식별 API (attach 시 사용, 향후 원격 mux용)
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -265,17 +272,30 @@ pub fn run_daemon() -> ! {
 
     let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
     let next_id = Arc::new(AtomicU64::new(1));
+    // 데몬 시작 시각 = boot id. 세션 ID는 재시작마다 1부터 재발급되므로,
+    // 죽은 데몬 시절의 layout.json이 새 데몬의 엉뚱한 세션과 매칭되는 것을
+    // 클라이언트가 이 값으로 걸러낸다. 단조성은 필요 없고 세대 구분만 하면
+    // 되므로 벽시계(epoch ms)로 충분하다.
+    let boot_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
 
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let registry = Arc::clone(&registry);
         let next_id = Arc::clone(&next_id);
-        std::thread::spawn(move || handle_connection(stream, registry, next_id));
+        std::thread::spawn(move || handle_connection(stream, registry, next_id, boot_id));
     }
     std::process::exit(0);
 }
 
-fn handle_connection(mut stream: UnixStream, registry: Registry, next_id: Arc<AtomicU64>) {
+fn handle_connection(
+    mut stream: UnixStream,
+    registry: Registry,
+    next_id: Arc<AtomicU64>,
+    boot_id: u64,
+) {
     let Ok((tag, payload)) = read_frame(&mut stream) else {
         return;
     };
@@ -287,6 +307,9 @@ fn handle_connection(mut stream: UnixStream, registry: Registry, next_id: Arc<At
             for id in ids {
                 out.extend_from_slice(&id.to_le_bytes());
             }
+            // boot id는 꼬리에만 붙인다 — 구버전 클라이언트는 count만큼 읽고
+            // 나머지를 무시하므로 프레임 형식이 하위호환이다.
+            out.extend_from_slice(&boot_id.to_le_bytes());
             let _ = write_frame(&mut stream, SESSION_LIST, &out);
         }
         CREATE => {
