@@ -3,7 +3,7 @@
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
 
-use super::color::ansi_to_rgb;
+use super::color::{ansi_to_rgb, mix};
 use super::text::FontSize;
 use super::{BgInstance, PADDING, PaneView, Renderer, TextInstance};
 
@@ -117,6 +117,14 @@ impl Renderer {
             if block_cursor {
                 bg = theme.cursor;
                 fg = theme.bg;
+            }
+
+            // 비활성 페인 디밍: 전경·셀 배경을 기본 배경 쪽으로 죽여 포커스된
+            // 페인이 한눈에 드러나게 한다 (iTerm2 Dim inactive split panes).
+            // 커서·preedit은 포커스된 페인에만 그려지므로 여기 올 일이 없다.
+            if !view.focused && theme.inactive_dim > 0.0 {
+                fg = mix(fg, theme.bg, theme.inactive_dim);
+                bg = mix(bg, theme.bg, theme.inactive_dim);
             }
 
             let width_cells = if flags.contains(Flags::WIDE_CHAR) {

@@ -137,8 +137,11 @@ pub struct Renderer {
     fonts: Vec<fontdue::Font>,
     /// fonts와 인덱스 대응: PUA(파워라인 등) 글리프를 이 폰트에서 찾아도 되는가.
     pua_ok: Vec<bool>,
-    /// 설정 파일의 논리 폰트 크기(pt). 모니터 배율 변경 시 재계산의 기준.
+    /// 현재 논리 폰트 크기(pt). 시작은 설정 파일 값이고, Cmd+= / Cmd+- 로
+    /// 런타임에 바뀔 수 있다 (Cmd+0이 설정 값으로 되돌린다).
     base_font_size: f32,
+    /// 모니터 배율. `font_px = base_font_size × scale`의 두 입력을 각각 든다.
+    scale: f32,
     font_px: f32,
     ascent: f32,
     /// UI 크롬(탭/상태바)용 작은 폰트 크기와 메트릭 (iTerm2식 탭 텍스트)
@@ -443,6 +446,7 @@ impl Renderer {
             fonts,
             pua_ok,
             base_font_size: cfg_font_size,
+            scale,
             font_px,
             ascent,
             ui_px,
@@ -465,10 +469,40 @@ impl Renderer {
     /// 다시 계산하고 glyph atlas를 비운다. 배율이 다른 모니터로 창을
     /// 옮겼을 때 글자가 커지거나 작아진 채로 남는 문제를 막는다.
     pub fn set_scale_factor(&mut self, scale: f32) {
-        let font_px = self.base_font_size * scale;
-        if (font_px - self.font_px).abs() < f32::EPSILON {
+        if (scale - self.scale).abs() < f32::EPSILON {
             return;
         }
+        self.scale = scale;
+        self.rebuild_metrics();
+    }
+
+    /// 현재 논리 폰트 크기(pt).
+    pub fn font_size(&self) -> f32 {
+        self.base_font_size
+    }
+
+    /// 논리 폰트 크기를 바꾼다 (Cmd+= / Cmd+- / Cmd+0). 호출자는 셀 크기가
+    /// 바뀌었으므로 페인들을 relayout해 PTY 크기를 다시 맞춰야 한다.
+    pub fn set_font_size(&mut self, pt: f32) {
+        if (pt - self.base_font_size).abs() < f32::EPSILON {
+            return;
+        }
+        self.base_font_size = pt;
+        self.rebuild_metrics();
+    }
+
+    /// 테마 색을 갈아탄다 (macOS 라이트/다크 전환).
+    ///
+    /// 배경 불투명도는 surface alpha 모드가 생성 시점에 고정되므로 여기서
+    /// 바꿔도 컴포지트 방식까지는 못 바꾼다 — 같은 설정 파일을 다시 읽는
+    /// 용도라 실제로는 값이 같다.
+    pub fn set_theme(&mut self, config: &crate::config::Config) {
+        self.theme = Theme::from_config(config);
+    }
+
+    /// `base_font_size × scale`로 폰트 픽셀 크기와 셀 메트릭을 재계산한다.
+    fn rebuild_metrics(&mut self) {
+        let font_px = self.base_font_size * self.scale;
         self.font_px = font_px;
         let line_metrics = self.fonts[0]
             .horizontal_line_metrics(font_px)
@@ -486,7 +520,7 @@ impl Renderer {
         self.ui_line_height = (ui_metrics.ascent - ui_metrics.descent + ui_metrics.line_gap).ceil();
         self.ui_advance = self.fonts[0].metrics('M', self.ui_px).advance_width;
 
-        // 기존 글리프는 이전 배율로 래스터라이즈됐으므로 캐시를 비워
+        // 기존 글리프는 이전 크기로 래스터라이즈됐으므로 캐시를 비워
         // 다음 프레임부터 새 크기로 다시 올린다.
         self.atlas.reset();
     }

@@ -428,6 +428,50 @@ impl App {
         }
     }
 
+    /// macOS 라이트/다크 전환. 설정 파일을 새 외양 기준으로 다시 읽어
+    /// (`theme-light`/`theme-dark` 줄이 갈린다) 테마를 즉시 갈아탄다.
+    /// 두 키가 없는 설정이면 같은 값이 다시 읽힐 뿐이라 무해하다.
+    fn on_theme_changed(&mut self, theme: winit::window::Theme) {
+        let appearance = match theme {
+            winit::window::Theme::Light => config::Appearance::Light,
+            _ => config::Appearance::Dark,
+        };
+        self.config = config::Config::load_for(appearance);
+        self.keymap = action::Keymap::from_config(&self.config.keybinds);
+        let state = self.state.as_mut().unwrap();
+        state.renderer.set_theme(&self.config);
+        state.window.request_redraw();
+    }
+
+    /// 폰트 크기를 `delta`(pt)만큼 조절한다 (Cmd+= / Cmd+-).
+    fn adjust_font_size(&mut self, delta: f32) {
+        let Some(state) = &self.state else { return };
+        let pt = state.renderer.font_size() + delta;
+        self.set_font_size(pt);
+    }
+
+    /// 폰트 크기를 설정 파일 값으로 되돌린다 (Cmd+0).
+    fn reset_font_size(&mut self) {
+        self.set_font_size(self.config.font_size);
+    }
+
+    /// 논리 폰트 크기를 설정한다. 설정 파일과 같은 범위(6~72pt)로 제한하고,
+    /// 셀 크기가 바뀌므로 모든 탭의 PTY 크기를 새 배치에 맞춘다.
+    fn set_font_size(&mut self, pt: f32) {
+        let pt = pt.clamp(6.0, 72.0);
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        if (state.renderer.font_size() - pt).abs() < f32::EPSILON {
+            return;
+        }
+        state.renderer.set_font_size(pt);
+        for i in 0..state.tabs.len() {
+            state.relayout_tab(i);
+        }
+        state.window.request_redraw();
+    }
+
     fn redraw(&mut self) {
         if self.state.is_none() {
             return;
@@ -574,6 +618,13 @@ impl ApplicationHandler<AppEvent> for App {
         window.set_ime_allowed(true);
         crate::set_dock_icon();
 
+        // 시스템이 라이트 외양이면 설정을 라이트 기준으로 다시 읽는다 —
+        // App::new 시점에는 창이 없어 외양을 알 수 없었다 (기본은 다크 해석).
+        if window.theme() == Some(winit::window::Theme::Light) {
+            self.config = config::Config::load_for(config::Appearance::Light);
+            self.keymap = action::Keymap::from_config(&self.config.keybinds);
+        }
+
         let renderer = renderer::Renderer::new(Arc::clone(&window), &self.config);
         self.clipboard = arboard::Clipboard::new().ok();
         self.state = Some(State {
@@ -647,6 +698,8 @@ impl ApplicationHandler<AppEvent> for App {
             // 알림 조건("보고 있지 않을 때만")에 쓰인다. 포커스를 되찾았을 때
             // Dock 바운스를 멈추는 것은 시스템이 알아서 한다.
             WindowEvent::Focused(focused) => self.window_focused = focused,
+            // macOS 라이트/다크 전환 — 설정을 새 외양 기준으로 다시 읽는다.
+            WindowEvent::ThemeChanged(theme) => self.on_theme_changed(theme),
             WindowEvent::ModifiersChanged(modifiers) => {
                 // Cmd를 누르고 있는 동안 IME를 끈다. 한글 조합(preedit) 중에는
                 // winit(macOS)이 keyDown을 IME(interpretKeyEvents)로만 보내고
@@ -682,6 +735,9 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 state.window.request_redraw();
             }
+            // 파일 드롭 → 셸 인용된 경로 붙여넣기 (여러 파일은 이벤트가
+            // 파일마다 한 번씩 온다).
+            WindowEvent::DroppedFile(path) => self.drop_file(&path),
             WindowEvent::KeyboardInput { event, .. } => self.on_key(event, event_loop),
             WindowEvent::Ime(ime) => self.on_ime(ime),
             WindowEvent::CursorMoved { position, .. } => self.on_cursor_moved(position),

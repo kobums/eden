@@ -3,10 +3,14 @@
 # 설정이 없어도 기본값으로 완결된 경험을 줍니다 (모든 줄은 선택 사항).
 
 # 컬러 프리셋 (theme 을 먼저 두고, 아래에서 개별 색으로 덮어쓸 수 있음)
-#   catppuccin (기본) | guezwhoz (iTerm2 다크 프리셋)
+#   catppuccin (기본) | guezwhoz (iTerm2 다크 프리셋) | latte (라이트)
 # theme = guezwhoz
 
-# 폰트 크기 (논리 픽셀, 6~72)
+# macOS 라이트/다크 외양별 프리셋 — 시스템 외양이 바뀌면 재시작 없이 갈아탑니다.
+# theme-light = latte
+# theme-dark = guezwhoz
+
+# 폰트 크기 (논리 픽셀, 6~72). Cmd+= / Cmd+- 로 런타임 조절, Cmd+0 이 이 값으로 복귀.
 # font-size = 14
 
 # 폰트 파일 경로 (없으면 자동 선택: MesloLGS Nerd Font → Menlo → Monaco → SF Mono)
@@ -23,6 +27,10 @@
 # 배경 불투명도 0.2~1.0 (1.0 = 불투명). iTerm2처럼 기본 배경에만 적용되고
 # 셀 배경색·텍스트는 불투명을 유지합니다.
 # background-opacity = 0.9
+
+# 비활성 페인 디밍 0~0.8 (0 = 끔). 분할 시 포커스된 페인이 한눈에 보이도록
+# 나머지 페인의 글자·셀 배경을 배경 쪽으로 죽입니다. 0.2 정도가 은은합니다.
+# inactive-dim = 0.2
 
 # 명령 완료 알림: 창이 비포커스이거나 다른 탭을 보는 중에, threshold초 이상
 # 걸린 명령이 끝나면 Dock 바운스 + 배너로 알립니다 (OSC 133 셸 통합 기반).
@@ -58,13 +66,14 @@
 #
 # 조합은 cmd가 반드시 있어야 하고(cmd 없는 키는 셸로 가야 합니다),
 # shift·opt를 덧붙일 수 있습니다. 키 이름은 a~z, 0~9, left/right/up/down,
-# [ ] enter space tab.
+# [ ] enter space tab, =(equal/plus), -(minus).
 #
 # 한 줄은 그 조합 하나만 바꿉니다 — 나머지 기본 단축키는 그대로입니다.
 # 액션: new-tab close-pane split-right split-down toggle-zoom next-tab
 #       prev-tab ai-generate search palette jump-prev-prompt jump-next-prompt
 #       copy copy-last-output paste focus-left focus-right focus-up
 #       focus-down select-tab-1 ~ select-tab-9
+#       font-size-up font-size-down font-size-reset
 #
 # keybind = cmd+shift+t = new-tab
 # keybind = cmd+e = split-right

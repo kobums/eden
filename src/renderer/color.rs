@@ -13,6 +13,8 @@ pub(super) struct Theme {
     pub(super) cursor_style: crate::config::CursorStyle,
     /// 기본 배경 불투명도 (셀 배경색·텍스트는 항상 불투명 — iTerm2와 동일)
     pub(super) opacity: f32,
+    /// 비활성 페인 디밍 강도 (0 = 끔).
+    pub(super) inactive_dim: f32,
     /// 블록 상태 거터를 그릴지 (`block-gutter = off`로 끌 수 있다).
     pub(super) block_gutter: bool,
     /// 블록 거터 색: 실행 중 / 성공 / 실패.
@@ -31,6 +33,7 @@ impl Theme {
             palette: config.palette,
             cursor_style: config.cursor_style,
             opacity: config.background_opacity,
+            inactive_dim: config.inactive_dim,
             block_gutter: config.block_gutter,
             block_running: config.block_running,
             block_ok: config.block_ok,
@@ -131,8 +134,8 @@ fn rgb8(r: u8, g: u8, b: u8) -> [f32; 3] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
 }
 
-/// 두 색을 t(0~1)로 섞는다. UI 크롬 색을 테마에서 파생할 때 사용.
-fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+/// 두 색을 t(0~1)로 섞는다. UI 크롬 색 파생과 비활성 페인 디밍에 사용.
+pub(super) fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [
         a[0] + (b[0] - a[0]) * t,
         a[1] + (b[1] - a[1]) * t,

@@ -37,7 +37,39 @@ const EXIT: u8 = 0x85; // (empty) — 셸 종료
 /// mux 제어 소켓 경로.
 pub fn socket_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".cache/eden/mux/control.sock")
+    socket_path_for(&home)
+}
+
+/// `sockaddr_un.sun_path`에 담을 수 있는 최대 경로 길이 (macOS 104바이트,
+/// 종단 NUL 포함이므로 실제 경로는 103자까지).
+const SUN_PATH_MAX: usize = 103;
+
+/// HOME 기준 소켓 경로. 기본은 `~/.cache/eden/mux/control.sock`인데,
+/// 유닉스 소켓 경로에는 `sun_path` 길이 제한이 있어 HOME이 길면 bind/connect가
+/// 실패한다 — 격리된 HOME으로 띄우는 테스트에서 `Session::new`가 패닉으로
+/// 드러난 실버그다 (plan.md). 그 경우 `/tmp` 아래의 짧은 경로로 폴백한다.
+/// 데몬과 클라이언트가 같은 규칙으로 계산하므로 항상 서로를 찾고, HOME 해시가
+/// 붙어 있어 서로 다른 HOME(=다른 데몬)의 격리도 유지된다.
+fn socket_path_for(home: &str) -> PathBuf {
+    let path = PathBuf::from(home).join(".cache/eden/mux/control.sock");
+    if path.as_os_str().len() <= SUN_PATH_MAX {
+        return path;
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!(
+        "/tmp/eden-mux-{uid}-{:016x}.sock",
+        fnv1a(home.as_bytes())
+    ))
+}
+
+/// FNV-1a 64비트 해시. 암호학적 강도가 필요 없는 경로 구분용.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 // --- 프레임 IO ---
@@ -528,4 +560,45 @@ fn install_shell_integration() -> Option<PathBuf> {
     )
     .ok()?;
     Some(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_home_uses_the_cache_path() {
+        let p = socket_path_for("/Users/me");
+        assert_eq!(p, PathBuf::from("/Users/me/.cache/eden/mux/control.sock"));
+    }
+
+    #[test]
+    fn long_home_falls_back_to_a_short_tmp_path() {
+        // sun_path 한계(103자)를 넘는 HOME — 예전에는 bind/connect가 실패해
+        // Session::new가 패닉했다.
+        let home = format!("/tmp/{}", "x".repeat(120));
+        let p = socket_path_for(&home);
+        assert!(
+            p.as_os_str().len() <= SUN_PATH_MAX,
+            "폴백 경로도 sun_path 한계 안이어야 한다: {p:?}"
+        );
+        assert!(p.starts_with("/tmp"), "{p:?}");
+    }
+
+    #[test]
+    fn different_long_homes_get_different_sockets() {
+        // 폴백끼리도 격리 유지 — 같은 소켓을 쓰면 다른 HOME의 데몬이 섞인다.
+        let a = socket_path_for(&format!("/tmp/{}/a", "x".repeat(120)));
+        let b = socket_path_for(&format!("/tmp/{}/b", "x".repeat(120)));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn boundary_length_home_still_uses_the_cache_path() {
+        // ".cache/eden/mux/control.sock" + "/" = 29자 → HOME 74자까지는 기본 경로.
+        let home = format!("/{}", "h".repeat(73));
+        let p = socket_path_for(&home);
+        assert!(p.starts_with(&home));
+        assert_eq!(p.as_os_str().len(), SUN_PATH_MAX);
+    }
 }

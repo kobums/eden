@@ -37,6 +37,10 @@ pub(super) enum Action {
     FocusRight,
     FocusUp,
     FocusDown,
+    FontSizeUp,
+    FontSizeDown,
+    /// 폰트 크기를 설정 파일 값으로 되돌린다 (Cmd+0).
+    FontSizeReset,
     /// 1-based 탭 번호로 전환 (Cmd+1..9).
     SelectTab(usize),
 }
@@ -65,6 +69,9 @@ const ACTION_NAMES: &[(&str, Action)] = &[
     ("focus-right", Action::FocusRight),
     ("focus-up", Action::FocusUp),
     ("focus-down", Action::FocusDown),
+    ("font-size-up", Action::FontSizeUp),
+    ("font-size-down", Action::FontSizeDown),
+    ("font-size-reset", Action::FontSizeReset),
 ];
 
 impl Action {
@@ -119,6 +126,11 @@ const DEFAULTS: &[(KeyCode, Option<bool>, bool, Action)] = &[
     (KeyCode::ArrowRight,   None,        true,  Action::FocusRight),
     (KeyCode::ArrowUp,      None,        true,  Action::FocusUp),
     (KeyCode::ArrowDown,    None,        true,  Action::FocusDown),
+    // Cmd+= / Cmd+- / Cmd+0: 폰트 크기. Shift 무관 — Cmd+Shift+=(즉 Cmd++)도
+    // 크기 키우기로 받는 것이 모든 터미널의 관례다.
+    (KeyCode::Equal,        None,        false, Action::FontSizeUp),
+    (KeyCode::Minus,        None,        false, Action::FontSizeDown),
+    (KeyCode::Digit0,       None,        false, Action::FontSizeReset),
     // Cmd+1..9: 탭 전환
     (KeyCode::Digit1,       None,        false, Action::SelectTab(1)),
     (KeyCode::Digit2,       None,        false, Action::SelectTab(2)),
@@ -223,6 +235,8 @@ fn parse_key(name: &str) -> Option<KeyCode> {
         "enter" | "return" => KeyCode::Enter,
         "space" => KeyCode::Space,
         "tab" => KeyCode::Tab,
+        "=" | "equal" | "plus" => KeyCode::Equal,
+        "-" | "minus" => KeyCode::Minus,
         _ => return None,
     })
 }
@@ -360,10 +374,50 @@ mod tests {
             (chord(KeyCode::ArrowDown, false, true), Action::FocusDown),
             (chord(KeyCode::Digit1, false, false), Action::SelectTab(1)),
             (chord(KeyCode::Digit9, false, false), Action::SelectTab(9)),
+            (chord(KeyCode::Equal, false, false), Action::FontSizeUp),
+            (chord(KeyCode::Minus, false, false), Action::FontSizeDown),
+            (chord(KeyCode::Digit0, false, false), Action::FontSizeReset),
         ];
         for (c, want) in cases {
             assert_eq!(m.get(c), Some(want), "{c:?}");
         }
+    }
+
+    #[test]
+    fn font_size_chords_are_shift_agnostic() {
+        // Cmd++는 물리적으로 Cmd+Shift+= 이다 — Shift가 있어도 크기 키우기.
+        let m = default_map();
+        for shift in [false, true] {
+            assert_eq!(
+                m.get(chord(KeyCode::Equal, shift, false)),
+                Some(Action::FontSizeUp)
+            );
+            assert_eq!(
+                m.get(chord(KeyCode::Minus, shift, false)),
+                Some(Action::FontSizeDown)
+            );
+        }
+    }
+
+    #[test]
+    fn font_size_keys_parse_in_keybind_lines() {
+        assert_eq!(
+            parse_chord("cmd+="),
+            Some(chord(KeyCode::Equal, false, false))
+        );
+        assert_eq!(
+            parse_chord("cmd+plus"),
+            Some(chord(KeyCode::Equal, false, false))
+        );
+        assert_eq!(
+            parse_chord("cmd+minus"),
+            Some(chord(KeyCode::Minus, false, false))
+        );
+        // `cmd+-`는 split('+')에서 빈 조각이 생기지만 "-" 조각이 살아남는다.
+        assert_eq!(
+            parse_chord("cmd+-"),
+            Some(chord(KeyCode::Minus, false, false))
+        );
     }
 
     #[test]

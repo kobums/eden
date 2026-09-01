@@ -13,6 +13,13 @@ pub enum CursorStyle {
     Underline,
 }
 
+/// macOS 시스템 외양. `theme-light`/`theme-dark` 키가 이 값에 따라 갈린다.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Appearance {
+    Light,
+    Dark,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub font_size: f32,
@@ -39,6 +46,10 @@ pub struct Config {
     /// dogfooding 기간의 탈출구로 기본 off — 켜기 전까지는 파서가 프로토콜
     /// 시퀀스를 무시하므로 앱에 지원을 advertise하지 않는다.
     pub kitty_keyboard: bool,
+    /// 비활성 페인 디밍 강도 0.0~0.8 (0 = 끔). 분할 시 포커스된 페인이
+    /// 어디인지 한눈에 보이게, 나머지 페인의 글자·셀 배경을 배경 쪽으로 죽인다
+    /// (iTerm2 "Dim inactive split panes").
+    pub inactive_dim: f32,
     /// 블록 상태 거터(왼쪽 세로 줄)를 그릴지.
     pub block_gutter: bool,
     /// 실행 중인 블록의 거터 색.
@@ -91,6 +102,9 @@ impl Default for Config {
             notify: true,
             notify_threshold: 10,
             kitty_keyboard: false,
+            // 기본 끔 — 기존 사용자의 화면을 조용히 바꾸지 않는다. 켤 때는
+            // 0.2 정도가 은은하다 (config.example 참고).
+            inactive_dim: 0.0,
             block_gutter: true,
             // 파랑(실행 중)·초록(성공)·빨강(실패). Phase 4부터 렌더러에
             // 하드코딩돼 있던 값을 그대로 기본값으로 옮긴 것이다.
@@ -103,19 +117,34 @@ impl Default for Config {
 }
 
 impl Config {
-    /// 설정 파일을 읽어 파싱한다. 없으면 기본값.
+    /// 설정 파일을 읽어 파싱한다. 없으면 기본값. 외양은 다크로 간주한다 —
+    /// 창이 생기기 전(외양을 모를 때)의 초기 로드용이고, eden 기본 테마가
+    /// 다크이므로 자연스러운 쪽이다.
     pub fn load() -> Self {
+        Self::load_for(Appearance::Dark)
+    }
+
+    /// 시스템 외양에 맞춰 설정 파일을 읽는다. `theme-light`/`theme-dark` 줄은
+    /// 해당 외양일 때만 적용된다 (라이트/다크 자동 전환).
+    pub fn load_for(appearance: Appearance) -> Self {
         let Some(path) = config_path() else {
             return Config::default();
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Config::default();
         };
-        Config::parse(&text)
+        Config::parse_for(&text, appearance)
     }
 
-    /// 설정 텍스트를 파싱한다. 파일 IO와 분리돼 있어 단위 테스트 가능하다.
+    /// 설정 텍스트를 파싱한다 (다크 외양). 테스트 전용 축약 — 실행 경로는
+    /// 항상 외양을 아는 `parse_for`를 지난다.
+    #[cfg(test)]
     pub fn parse(text: &str) -> Self {
+        Self::parse_for(text, Appearance::Dark)
+    }
+
+    /// 설정 텍스트를 주어진 외양으로 파싱한다.
+    pub fn parse_for(text: &str, appearance: Appearance) -> Self {
         let mut config = Config::default();
         for line in text.lines() {
             let line = line.trim();
@@ -127,7 +156,7 @@ impl Config {
             };
             let key = key.trim();
             let value = value.trim();
-            config.apply(key, value);
+            config.apply(key, value, appearance);
         }
         config
     }
@@ -137,6 +166,7 @@ impl Config {
     fn apply_preset(&mut self, name: &str) {
         let preset = match name.to_lowercase().as_str() {
             "guezwhoz" => &GUEZWHOZ,
+            "catppuccin-latte" | "latte" => &CATPPUCCIN_LATTE,
             "catppuccin" => return, // 기본값이 이미 catppuccin
             _ => return,            // 알 수 없는 프리셋 무시
         };
@@ -159,9 +189,21 @@ impl Config {
         }
     }
 
-    fn apply(&mut self, key: &str, value: &str) {
+    fn apply(&mut self, key: &str, value: &str, appearance: Appearance) {
         match key {
             "theme" => self.apply_preset(value),
+            // 시스템 외양별 프리셋 — 맞지 않는 외양의 줄은 통째로 무시된다.
+            // `theme`과 같은 순서 규칙: 뒤에 오는 개별 색 키가 이긴다.
+            "theme-light" => {
+                if appearance == Appearance::Light {
+                    self.apply_preset(value);
+                }
+            }
+            "theme-dark" => {
+                if appearance == Appearance::Dark {
+                    self.apply_preset(value);
+                }
+            }
             "font-size" => {
                 if let Ok(v) = value.parse::<f32>()
                     && (6.0..=72.0).contains(&v)
@@ -224,6 +266,13 @@ impl Config {
                 "off" | "false" => self.kitty_keyboard = false,
                 _ => {} // 알 수 없는 값은 무시 — 기본값 유지
             },
+            "inactive-dim" => {
+                if let Ok(v) = value.parse::<f32>()
+                    && (0.0..=0.8).contains(&v)
+                {
+                    self.inactive_dim = v;
+                }
+            }
             "block-gutter" => match value.to_lowercase().as_str() {
                 "on" | "true" => self.block_gutter = true,
                 "off" | "false" => self.block_gutter = false,
@@ -274,6 +323,19 @@ struct Preset {
     selection: &'static str,
     palette: [&'static str; 16],
 }
+
+/// Catppuccin Latte — 라이트 프리셋. `theme-light`와 짝을 이루라고 넣었다
+/// (기본 팔레트가 Catppuccin Mocha 계열이라 라이트 짝도 같은 패밀리로).
+const CATPPUCCIN_LATTE: Preset = Preset {
+    background: "#eff1f5",
+    foreground: "#4c4f69",
+    cursor: "#dc8a78",
+    selection: "#acb0be",
+    palette: [
+        "#5c5f77", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#acb0be",
+        "#6c6f85", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#bcc0cc",
+    ],
+};
 
 /// Guezwhoz — iTerm2 다크 프리셋.
 const GUEZWHOZ: Preset = Preset {
@@ -404,6 +466,23 @@ mod tests {
     }
 
     #[test]
+    fn inactive_dim_is_range_checked() {
+        assert_eq!(Config::parse("inactive-dim = 0.2").inactive_dim, 0.2);
+        assert_eq!(Config::parse("inactive-dim = 0").inactive_dim, 0.0);
+        assert_eq!(Config::parse("inactive-dim = 0.8").inactive_dim, 0.8);
+
+        let default = Config::default().inactive_dim;
+        assert_eq!(default, 0.0, "기본 끔 — 기존 화면을 조용히 바꾸지 않는다");
+        assert_eq!(
+            Config::parse("inactive-dim = 0.9").inactive_dim,
+            default,
+            "너무 세면 비활성 페인이 안 보인다"
+        );
+        assert_eq!(Config::parse("inactive-dim = -0.1").inactive_dim, default);
+        assert_eq!(Config::parse("inactive-dim = abc").inactive_dim, default);
+    }
+
+    #[test]
     fn scrollback_clamps_at_one_million() {
         assert_eq!(Config::parse("scrollback = 500").scrollback, 500);
         assert_eq!(Config::parse("scrollback = 99999999").scrollback, 1_000_000);
@@ -486,5 +565,48 @@ font-size = 20
     fn unknown_preset_leaves_defaults_alone() {
         let c = Config::parse("theme = nonexistent");
         assert_eq!(c.background, Config::default().background);
+    }
+
+    // ─── 라이트/다크 외양별 프리셋 ───
+
+    #[test]
+    fn appearance_keys_apply_only_to_the_matching_appearance() {
+        let text = "theme-light = latte\ntheme-dark = guezwhoz";
+        let light = Config::parse_for(text, Appearance::Light);
+        assert_eq!(light.background, parse_hex("#eff1f5").unwrap());
+        let dark = Config::parse_for(text, Appearance::Dark);
+        assert_eq!(dark.background, parse_hex("#1d1d1d").unwrap());
+    }
+
+    #[test]
+    fn parse_defaults_to_dark_appearance() {
+        // Config::parse는 다크로 간주한다 — theme-light 줄은 무시된다.
+        let c = Config::parse("theme-light = latte");
+        assert_eq!(c.background, Config::default().background);
+    }
+
+    #[test]
+    fn missing_appearance_key_keeps_defaults_for_that_appearance() {
+        // theme-dark만 있으면 라이트 외양에선 기본값 그대로다.
+        let c = Config::parse_for("theme-dark = guezwhoz", Appearance::Light);
+        assert_eq!(c.background, Config::default().background);
+    }
+
+    #[test]
+    fn explicit_color_still_overrides_an_appearance_preset() {
+        // `theme`과 같은 순서 규칙이 외양 키에도 적용된다.
+        let c = Config::parse_for(
+            "theme-light = latte\nbackground = #123456",
+            Appearance::Light,
+        );
+        assert_eq!(c.background, parse_hex("#123456").unwrap());
+    }
+
+    #[test]
+    fn latte_preset_is_actually_light() {
+        let c = Config::parse("theme = latte");
+        let luma = |v: [f32; 3]| (v[0] + v[1] + v[2]) / 3.0;
+        assert!(luma(c.background) > 0.8, "라이트 배경");
+        assert!(luma(c.foreground) < 0.5, "어두운 전경");
     }
 }

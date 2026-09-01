@@ -24,6 +24,9 @@ const PALETTE_ACTIONS: &[(&str, Action)] = &[
     ("Jump to Previous Prompt", Action::JumpPrevPrompt),
     ("Jump to Next Prompt", Action::JumpNextPrompt),
     ("Copy Last Command Output", Action::CopyLastOutput),
+    ("Increase Font Size", Action::FontSizeUp),
+    ("Decrease Font Size", Action::FontSizeDown),
+    ("Reset Font Size", Action::FontSizeReset),
 ];
 
 /// 커맨드 팔레트 상태.
@@ -77,6 +80,9 @@ impl App {
             Action::Copy => self.copy_selection(),
             Action::CopyLastOutput => self.copy_last_output(),
             Action::Paste => self.paste(),
+            Action::FontSizeUp => self.adjust_font_size(1.0),
+            Action::FontSizeDown => self.adjust_font_size(-1.0),
+            Action::FontSizeReset => self.reset_font_size(),
             Action::FocusLeft => self.move_focus(-1.0, 0.0),
             Action::FocusRight => self.move_focus(1.0, 0.0),
             Action::FocusUp => self.move_focus(0.0, -1.0),
