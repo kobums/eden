@@ -20,7 +20,8 @@ background = #16161e
 
 | 키 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `theme` | 프리셋 이름 | `catppuccin` | 컬러 프리셋. `catppuccin` \| `guezwhoz`(iTerm2 다크) |
+| `theme` | 프리셋 이름 | `catppuccin` | 컬러 프리셋. `catppuccin` \| `guezwhoz`(iTerm2 다크) \| `latte`(라이트) |
+| `theme-light` / `theme-dark` | 프리셋 이름 | (없음) | macOS 외양별 프리셋 — 시스템이 라이트/다크로 바뀌면 즉시 갈아탄다. 아래 참고 |
 | `font-size` | 실수 (6~72) | `14` | 폰트 크기 (논리 픽셀) |
 | `font-path` | 파일 경로 | (시스템 자동) | 주 폰트 파일 (`~/` 시작 경로 지원). 없으면 MesloLGS Nerd Font → Menlo → Monaco → SF Mono 순으로 자동 선택 |
 | `scrollback` | 정수 | `10000` | 스크롤백 줄 수 (최대 1,000,000) |
@@ -31,6 +32,7 @@ background = #16161e
 | `palette-0` … `palette-15` | `#rrggbb` | (프리셋) | 16색 ANSI 팔레트 (0~7 표준, 8~15 밝은색) |
 | `cursor-style` | `block` \| `bar` \| `underline` | `block` | 커서 모양 (iTerm2 Cursor Type 대응) |
 | `background-opacity` | 실수 (0.2~1.0) | `1.0` | 배경 불투명도. iTerm2처럼 기본 배경에만 적용 — 셀 배경색·텍스트는 불투명 유지 |
+| `inactive-dim` | 실수 (0~0.8) | `0` (끔) | 비활성 페인 디밍 강도 — 분할 시 포커스된 페인이 한눈에 보인다. 0.2 정도가 은은하다 |
 | `block-gutter` | `on` \| `off` | `on` | 명령 블록 왼쪽의 상태 거터(세로 줄) 표시 |
 | `block-running-color` | `#rrggbb` | `#598cf2` | 실행 중인 블록의 거터 색 |
 | `block-ok-color` | `#rrggbb` | `#59b875` | 성공(exit 0)한 블록의 거터 색 |
@@ -55,7 +57,8 @@ keybind = cmd+e = split-right
 조합에는 **`cmd`가 반드시 있어야 한다.** Cmd 없는 키는 셸로 가야 하는데,
 사용자가 그 영역을 가로채면 터미널이 망가지기 때문이다. `shift`·`opt`를
 덧붙일 수 있고, 수식자 순서와 대소문자는 상관없다. 키 이름은 `a`~`z`, `0`~`9`,
-`left`/`right`/`up`/`down`, `[`, `]`, `enter`, `space`, `tab`.
+`left`/`right`/`up`/`down`, `[`, `]`, `enter`, `space`, `tab`,
+`=`(또는 `equal`/`plus`), `-`(또는 `minus`).
 
 액션 이름:
 
@@ -64,6 +67,7 @@ keybind = cmd+e = split-right
 | 탭 | `new-tab` `close-pane` `next-tab` `prev-tab` `select-tab-1` … `select-tab-9` |
 | 분할 | `split-right` `split-down` `toggle-zoom` `focus-left` `focus-right` `focus-up` `focus-down` |
 | 블록 | `jump-prev-prompt` `jump-next-prompt` `copy-last-output` |
+| 폰트 | `font-size-up` `font-size-down` `font-size-reset` |
 | 기타 | `copy` `paste` `search` `palette` `ai-generate` |
 
 해석할 수 없는 줄(모르는 키·액션, `cmd` 없음)은 조용히 무시되고 기본값이
@@ -92,8 +96,22 @@ cursor-color = #ffffff    # 프리셋 커서색만 덮어쓰기
 
 | 프리셋 | 성격 |
 |---|---|
-| `catppuccin` | 기본 (다크, 파스텔) |
+| `catppuccin` | 기본 (다크, 파스텔 — Mocha 계열) |
 | `guezwhoz` | iTerm2 Guezwhoz 다크 프리셋 |
+| `latte` (=`catppuccin-latte`) | Catppuccin Latte 라이트 프리셋 |
+
+### 라이트/다크 자동 전환
+
+`theme-light`/`theme-dark`를 두면 macOS 외양을 따라간다 — 시스템이
+라이트/다크로 바뀌는 순간 재시작 없이 색이 갈아탄다.
+
+```
+theme-light = latte
+theme-dark = guezwhoz
+```
+
+맞지 않는 외양의 줄은 통째로 무시되고, `theme`처럼 뒤에 오는 개별 색 키가
+프리셋을 덮어쓴다. 한쪽만 두면 다른 외양에서는 기본값(다크 팔레트)이다.
 
 ## 예시
 
@@ -113,6 +131,10 @@ selection-color = #244a33
 
 설정은 앱 시작 시 한 번 읽는다. 바꾼 뒤에는 앱을 다시 실행해야 반영된다.
 세션 지속성 때문에 재실행해도 셸은 유지되므로, 테마만 바뀌고 작업은 그대로다.
+
+예외: macOS 라이트/다크 전환 시에는 설정 파일을 새 외양 기준으로 다시 읽는다
+(`theme-light`/`theme-dark` 반영). 폰트 크기는 Cmd+= / Cmd+- 로 런타임에도
+조절할 수 있다 (재시작하면 `font-size` 값으로 복귀).
 
 ## 아직 설정으로 못 바꾸는 것
 

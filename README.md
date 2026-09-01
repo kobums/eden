@@ -20,7 +20,7 @@
 - **하이퍼링크** — OSC 8 링크에 밑줄 + Cmd+클릭으로 열기
 - **커맨드 팔레트** — Cmd+Shift+P
 - **하단 상태바** — 작업 디렉터리 · git 브랜치 · CPU · 메모리 · 시계 (iTerm2 스타일)
-- **설정 · 테마** — `~/.config/eden/config`, 컬러 프리셋(`theme = guezwhoz`) + 16색 팔레트 + Nerd Font + 커서 모양 + 배경 투명도
+- **설정 · 테마** — `~/.config/eden/config`, 컬러 프리셋(`theme = guezwhoz`) + 16색 팔레트 + Nerd Font + 커서 모양 + 배경 투명도 + macOS 라이트/다크 자동 전환(`theme-light`/`theme-dark`)
 - **폰트 자동 선택** — MesloLGS Nerd Font가 설치돼 있으면 우선 사용, 없으면 Menlo/Monaco/SF Mono. 파워라인 글리프(PUA)는 Nerd Font에서 자동 폴백
 - **한글 입력 소스에서도 단축키 동작** — 단축키는 물리 키 위치로 매칭되고, 한글 조합 중에도 Cmd 조합이 먹힌다
 
@@ -70,6 +70,7 @@ scrollback = 10000
 | Cmd+Z | 페인 줌 토글 |
 | Cmd+↑ / Cmd+↓ | 이전 / 다음 프롬프트로 점프 |
 | Cmd+F | 스크롤백 검색 (열려 있으면 다음 매치) |
+| Cmd+= / Cmd+- / Cmd+0 | 폰트 크기 키우기 / 줄이기 / 복귀 |
 | Cmd+K | AI 명령 생성 |
 | Cmd+Shift+P | 커맨드 팔레트 |
 | Ctrl+` | Quake 드롭다운 토글 (전역 핫키) |
