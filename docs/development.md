@@ -167,16 +167,20 @@ Phase 13 이후의 후속 작업 (릴리스 단위 — design.md의 Phase 14·15
 | v0.1.3 | `cargo run`에서도 Dock 아이콘 표시 |
 | v0.1.4 | 앱 이름 `terminal-dev` → `eden` 확정, 릴리스 파이프라인(서명·공증·cask 자동화) |
 | v0.1.5 | 한글 IME 조합 중 Cmd 단축키 수정 + 물리 키(KeyCode) 매칭 전환 |
+| v0.2.0 | Phase 16~20: 평문 URL 감지, 명령 완료 알림 + OSC 9/777, 거터 색·키바인딩 설정, 분할 레이아웃 복원, Kitty keyboard protocol(기본 off) |
+| v0.2.1 | Phase 21: 폰트 크기 단축키, `SUN_LEN` 패닉 수정, 파일 드롭 경로 붙여넣기, 비활성 페인 디밍, 라이트/다크 자동 전환 |
 
 ## 남은 작업
 
-- **Kitty keyboard protocol** — 완전한 CSI-u 인코더 필요. 반쪽 구현은 프로토콜을
-  켜는 앱(Neovim 등)의 키 입력을 깨뜨리므로, 실제 클라이언트로 검증할 수 있을 때
-  구현.
+전체 후보 목록과 우선순위는 [design.md](design.md)의 "향후 로드맵 후보"가
+단일 출처다. 여기에는 이전 Phase가 명시적으로 남긴 것만 적는다.
+
+- **Kitty keyboard protocol 기본 on 전환** — Phase 20에서 인코더·모드 스택은
+  완성했고 기본 off로 두었다. Neovim 등 실제 클라이언트에서 며칠 써 본 뒤 켠다.
 - **Kitty graphics protocol** — APC 파싱 + 이미지 디코드 + 별도 GPU 텍스처
   아틀라스/배치 서브시스템 필요.
-- 설정 확장 (키바인딩 커스터마이즈, 블록/오버레이 색 등 —
-  현재 설정 가능한 범위는 [configuration.md](configuration.md) 참고).
+- 블록 접기·재실행 (Phase 4), 페인별 검색·검색 히스토리 (Phase 11),
+  구분선 호버 커서·더블클릭 50/50 복원 (Phase 13).
 - glyph atlas가 가득 찼을 때의 축출/증설 (현재는 이후 글리프를 그리지 않는다).
 
 ## 코드 스타일
