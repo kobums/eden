@@ -35,7 +35,9 @@ src/
     color.rs      테마와 ANSI 색 변환
     shader.wgsl   배경/글리프 셰이더
   session.rs    페인 세션 (Term + OSC 133/OSC 7 스캐너 + 블록 + mux 클라이언트)
-  mux.rs        mux 데몬 + 클라이언트 (세션 지속성, 셸 통합 설치)
+  mux.rs        mux 데몬 + 클라이언트 (세션 지속성, 세션별 셸 상태, 셸 통합 설치)
+  osc.rs        OSC 133/7 스캔 순수 함수 + ShellState (session.rs와 mux.rs가 공유)
+  cli.rs        `eden list / new / send / wait / capture / kill` 서브커맨드
   layout.rs     페인 이진 분할 트리 (분할 비율·구분선·줌)
   config.rs     설정 파서
   ai.rs         자연어 → 셸 명령 (Anthropic BYOK / Ollama)

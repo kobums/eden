@@ -38,11 +38,13 @@ Term은 GUI 쪽에 남기 때문에 선택·스크롤·블록·AI 등 모든 기
 
 | 모듈 | 역할 |
 |---|---|
-| `main.rs` | 진입점 — 데몬 분기, 이벤트 루프 생성, Dock 아이콘 지정(`cargo run`도 번들과 같은 아이콘) |
+| `main.rs` | 진입점 — 데몬/CLI 분기, 이벤트 루프 생성, Dock 아이콘 지정(`cargo run`도 번들과 같은 아이콘) |
+| `cli.rs` | `eden list / new / send / wait / capture / kill` — GUI 없이 데몬 세션을 조작하는 서브커맨드 |
+| `osc.rs` | OSC 133/7 스캔 순수 함수 + `ShellState` — GUI 세션과 mux 데몬이 공유 |
 | `app/` | winit 앱 — 창/탭/페인 상태, 이벤트 루프 배선, 입력 라우팅 |
 | `renderer/` | wgpu 렌더러 — glyph atlas, 셀 배경/글리프 2패스, 크롬, 오버레이 |
 | `session.rs` | 페인 세션 — Term + OSC 133 스캐너 + 블록 도출 + mux 클라이언트 |
-| `mux.rs` | mux 데몬 + 클라이언트 + 프레임 프로토콜 (세션 지속성) |
+| `mux.rs` | mux 데몬 + 클라이언트 + 프레임 프로토콜 (세션 지속성, 세션별 셸 상태) |
 | `layout.rs` | 페인 이진 분할 트리 (분할/제거/배치 계산·줌) |
 | `config.rs` | 설정 파일 파서 (`key = value`) |
 | `ai.rs` | 자연어 → 셸 명령 생성 (Anthropic BYOK / 로컬 Ollama) |
@@ -156,6 +158,8 @@ Cmd+↑/↓ 프롬프트 점프, Cmd+Shift+C 마지막 출력 복사, AI 컨텍�
 사용자가 한 줄 source하게 안내한다. fish는 3.4+가 OSC 133을 자체 발신하므로
 아무것도 필요 없다. 같은 통합 스크립트가 **OSC 7**로 현재 작업 디렉터리도
 보고하며, 리더 스레드가 이를 파싱해 세션 cwd로 저장한다(하단 상태바에서 사용).
+C 마크에는 fish와 같은 이름으로 `cmdline_url=<퍼센트 인코딩 명령줄>`이
+붙는다 — GUI는 첫 글자만 보고, 데몬이 `eden list`의 COMMAND 열에 쓴다.
 
 새 셸은 항상 **홈 디렉터리에서 시작**한다 — 데몬이 Dock에서 실행된 앱에서
 스폰되면 cwd가 `/`인데, 그걸 상속시키지 않도록 PTY 생성 시 working directory를
@@ -180,6 +184,20 @@ Unix 소켓(`~/.cache/eden/mux/control.sock`) 위의 길이 프리픽스 프레�
 |---|---|---|
 | 클라 → 데몬 | Create / Attach / Input / Resize / Kill / List | 세션 생성·부착·입력·크기·종료·목록 |
 | 데몬 → 클라 | Attached / Output / SessionList / Exit | 부착 완료·출력 바이트·세션 목록·셸 종료 |
+| CLI → 데몬 | Send / Peek / ListInfo / Spawn / KillId | 지정 세션 입력·리플레이 스냅샷·상세 목록·부착 없는 생성·지정 세션 종료 |
+| 데몬 → CLI | Ok / Replay / SessionInfo / Created | 위 요청의 응답 |
+
+CLI용 프레임은 **연결 하나에 요청 하나**다 — 구독자로 등록하지 않고 응답
+하나를 받으면 양쪽이 닫는다. 그래서 attach 경로(리플레이 전송·구독·리사이즈)와
+전혀 섞이지 않고, `Peek`은 세션을 리사이즈하지 않는다. 구버전 데몬은 모르는
+태그에 응답 없이 연결을 닫으므로 클라이언트는 EOF를 "구버전 데몬" 오류로
+바꾼다 (세션을 모두 닫으면 데몬이 내려가고 다음 실행에서 새 버전이 뜬다).
+
+데몬은 세션마다 `ShellState`(running · last_exit · cwd · 명령줄 · 시작/완료
+카운터)를 유지한다 — 리더 스레드가 리플레이 버퍼에 쌓는 바이트를 `osc.rs`의
+스캐너로 한 번 더 읽는다. GUI 세션의 스캐너와 같은 함수라 두 파서가 어긋날
+일이 없다. `SessionInfo` 레코드에는 길이가 붙어 있어 꼬리에 필드를 더해도
+구버전 클라이언트가 읽는다.
 
 부착 시 데몬은 락을 잡은 채 리플레이 버퍼를 먼저 보내고 구독자로 등록해 라이브
 바이트 유실을 막는다. 창을 닫으면(소켓 종료) detach로 처리하고 세션은 살아있다.

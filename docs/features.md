@@ -33,9 +33,11 @@ bash 3.2에서도 동작한다.
 **fish — 자동. 설정도, 스크립트도 없다.** fish는 3.4부터 OSC 133을 자체적으로
 내보낸다. 우리가 할 일이 없다.
 
-fish는 마크에 파라미터를 붙여 보내지만(`A;click_events=1`,
-`C;cmdline_url=ls`) 파서가 첫 글자로만 분기하므로 그대로 동작한다.
-`src/session.rs`의 테스트가 세 셸의 실제 형식을 모두 고정하고 있다.
+fish는 마크에 파라미터를 붙여 보내고(`A;click_events=1`, `C;cmdline_url=ls`)
+우리 zsh/bash 스크립트도 같은 이름으로 명령줄을 보낸다. 파서는 첫 글자로만
+분기하므로 파라미터 유무와 무관하게 동작하고, `cmdline_url`은 `eden list`의
+COMMAND 열에만 쓰인다. `src/osc.rs`의 테스트가 세 셸의 실제 형식을 모두
+고정하고 있다.
 
 셸 통합이 없어도 터미널의 나머지 기능은 전부 동작한다 — 블록 UI와 프롬프트
 점프, 상태바의 작업 디렉터리 표시만 비활성화된다.
@@ -124,6 +126,44 @@ tmux 없이 탭과 페인 분할을 쓴다.
 탭 하나로 폴백한다. 줌 상태는 일시적인 것이라 저장하지 않는다.
 
 동작 원리는 [architecture.md](architecture.md)의 mux 데몬 참고.
+
+## CLI · 에이전트 오케스트레이션 (`eden list / send / capture`)
+
+같은 `eden` 바이너리가 서브커맨드를 받으면 GUI 대신 데몬에 묻고 끝난다.
+tmux의 `list-windows` / `send-keys` / `capture-pane`에 해당하며, 스크립트나
+AI 에이전트가 "세션을 만들고 → 명령을 넣고 → 끝나길 기다리고 → 화면을 읽는"
+루프를 돌리는 데 쓴다. Homebrew로 설치하면 `eden`이 PATH에 걸린다.
+
+```sh
+eden list                     # ID · STATE(running/idle) · EXIT · SIZE · CWD · COMMAND
+eden list --json              # 기계용
+id=$(eden new --cwd ~/proj)   # 세션 생성 (붙지 않음). GUI는 다음 포커스 때 탭으로 붙인다
+eden send $id 'cargo test' --wait; echo $?   # 끝날 때까지 기다리고 종료 코드를 돌려준다
+eden capture $id -n 40        # 화면 마지막 40줄 (-s: 스크롤백 포함)
+eden send $id -r '\x03'       # Ctrl+C (raw 이스케이프: \n \r \t \e \xHH)
+eden send $id -n 'partial'    # Enter 없이
+eden wait $id --timeout 300   # 이미 돌고 있는 명령을 기다린다 (초과 시 124)
+eden kill $id
+```
+
+- `send`는 기본으로 끝에 Enter(CR)를 붙인다 — 셸에도, Claude Code 같은 raw
+  모드 TUI에도 통한다. 옵션은 텍스트 앞뒤 어디에 와도 되고 모르는 `-x`는
+  텍스트다 (`eden send 1 ls -la`). 텍스트에 진짜 `--wait`를 넣으려면 `--` 뒤에.
+- `send --wait`는 "보낸 명령이 끝났는가"를 running 플래그가 아니라 완료
+  카운터로 판정한다. `false`처럼 순식간에 끝나는 명령도 놓치지 않는다. 2초
+  안에 명령이 시작되지 않으면(빈 줄, TUI 내부 입력) 기다릴 것이 없으므로 0.
+- `capture`는 GUI가 붙을 때와 같은 방식으로 리플레이를 재생하므로 화면이
+  GUI와 같다. 리플레이가 2MB에서 잘려 있으면 그 앞 스크롤백은 없다.
+- 종료 코드: 0 성공 · 1 오류 · 2 사용법 · 3 세션 없음 · 124 시간 초과.
+  `wait` / `send --wait`는 명령의 종료 코드를 그대로 돌려준다.
+- 데몬이 없으면 `list`는 빈 목록이고 `new`가 데몬을 띄운다. 업그레이드 뒤
+  "구버전 데몬" 오류가 나면 세션을 모두 닫으면 된다 — 데몬은 세션이 없으면
+  스스로 내려간다.
+
+**탭 상태 점.** 여러 페인에서 에이전트를 돌릴 때 "어느 탭이 아직 돌고 있고
+어느 탭이 입력을 기다리나"를 탭 바에서 본다. 탭 제목 앞에 실행 중이면 파란
+점, 보고 있지 않을 때 끝났으면 성공 초록·실패 빨간 점이 붙고, 그 탭을 보면
+지워진다. 색은 블록 거터(`block-running` 등)와 같다.
 
 ## 하이퍼링크 · URL (Cmd+클릭)
 
