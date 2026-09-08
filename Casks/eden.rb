@@ -13,6 +13,8 @@ cask "eden" do
   depends_on macos: ">= :big_sur"
 
   app "eden.app"
+  # `eden list` 등 CLI — 같은 바이너리가 인자에 따라 GUI/CLI로 나뉜다
+  binary "#{appdir}/eden.app/Contents/MacOS/eden"
 
   zap trash: [
     "~/.config/eden",

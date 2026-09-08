@@ -89,6 +89,10 @@ pub struct Pane {
     pub id: usize,
     pub session: Session,
     pub title: String,
+    /// 보고 있지 않을 때 끝난 명령의 종료 코드 — 탭 바에 점으로 표시되고,
+    /// 그 탭을 다시 보면(그려지면) 지워진다. 바깥 Option은 "미확인 결과가
+    /// 있는가", 안쪽은 D 마크의 종료 코드(없을 수 있다)다.
+    pub unseen_exit: Option<Option<i32>>,
 }
 
 /// 분할 트리가 페이로드에서 요구하는 전부 — 식별자 하나.

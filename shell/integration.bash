@@ -1,5 +1,6 @@
 # OSC 133 셸 통합 (bash): 프롬프트/명령의 경계를 터미널에 알린다.
-#   A = 프롬프트 시작, C = 명령 출력 시작, D;<exit> = 명령 종료
+#   A = 프롬프트 시작, C;cmdline_url=<명령줄> = 명령 출력 시작, D;<exit> = 명령 종료
+# 명령줄은 퍼센트 인코딩해 보낸다 (`eden list`의 COMMAND 열).
 #
 # zsh와 달리 bash에는 ZDOTDIR 같은 안전한 주입 지점이 없다. 로그인 셸은
 # --rcfile을 무시하고, --rcfile을 쓰려고 로그인 셸을 포기하면 /etc/profile
@@ -44,11 +45,22 @@ _eden_preexec() {
   esac
   # 한 줄에 여러 명령이 있어도 C는 처음 한 번만
   [ -n "$_eden_executing" ] && return
-  printf '\033]133;C\007'
+  printf '\033]133;C;cmdline_url=%s\007' "$(_eden_urlencode "$BASH_COMMAND")"
   _eden_executing=1
 }
 
-trap '_eden_preexec' DEBUG
+# 바이트 단위 퍼센트 인코딩 (bash 3.2 호환). LC_ALL=C로 멀티바이트를 바이트로 쪼갠다.
+_eden_urlencode() {
+  local LC_ALL=C s="${1:0:512}" out="" c i
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:$i:1}"
+    case "$c" in
+      [a-zA-Z0-9._~/-]) out="$out$c" ;;
+      *) printf -v c '%%%02X' "$(( $(printf '%d' "'$c") & 255 ))"; out="$out$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
 
 # 기존 PROMPT_COMMAND보다 먼저 실행되어야 $?가 사용자 명령의 것이다.
 if [ -n "$PROMPT_COMMAND" ]; then
@@ -56,3 +68,7 @@ if [ -n "$PROMPT_COMMAND" ]; then
 else
   PROMPT_COMMAND="_eden_precmd"
 fi
+
+# 트랩은 맨 마지막에 건다 — 위 설정 코드 자체에 트랩이 걸려 가짜 C 마크가
+# 나가지 않도록.
+trap '_eden_preexec' DEBUG

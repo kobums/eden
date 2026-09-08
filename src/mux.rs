@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use alacritty_terminal::event::{OnResize, WindowSize};
 use alacritty_terminal::tty;
 
+use crate::osc::ShellState;
+
 // --- 프레임 태그 ---
 // 클라이언트 → 데몬
 const CREATE: u8 = 0x01; // cols u16, lines u16, px u16, py u16
@@ -28,11 +30,22 @@ const INPUT: u8 = 0x03; // raw bytes
 const RESIZE: u8 = 0x04; // cols u16, lines u16, px u16, py u16
 const LIST: u8 = 0x05; // (empty)
 const KILL: u8 = 0x06; // (empty) — 현재 세션 종료
+// 클라이언트 → 데몬: 구독 없이 한 번 묻고 끊는 CLI용 프레임 (Phase 22).
+// 연결 하나에 요청 하나 — 응답을 받으면 양쪽 다 닫는다.
+const SEND: u8 = 0x07; // id u64, raw bytes — 지정 세션의 PTY에 입력
+const PEEK: u8 = 0x08; // id u64 — 리플레이 버퍼 스냅샷 (리사이즈·구독 없음)
+const LIST_INFO: u8 = 0x09; // (empty) — 세션 상세 목록
+const SPAWN: u8 = 0x0A; // cols u16, lines u16, px u16, py u16, cwd bytes — 붙지 않고 세션 생성
+const KILL_ID: u8 = 0x0B; // id u64 — 지정 세션 종료
 // 데몬 → 클라이언트
 const ATTACHED: u8 = 0x81; // id u64
 const OUTPUT: u8 = 0x82; // raw bytes
 const SESSION_LIST: u8 = 0x83; // count u32, ids u64..., boot u64 (꼬리 필드 — 구버전 데몬 응답에는 없다)
 const EXIT: u8 = 0x85; // (empty) — 셸 종료
+const OK: u8 = 0x86; // u8 — 1 성공 / 0 실패 (세션 없음 등)
+const REPLAY: u8 = 0x87; // cols u16, lines u16, raw bytes
+const SESSION_INFO: u8 = 0x88; // count u32, SessionInfo… (encode_info 참고)
+const CREATED: u8 = 0x89; // id u64
 
 /// mux 제어 소켓 경로.
 pub fn socket_path() -> PathBuf {
@@ -219,6 +232,196 @@ impl MuxClient {
     }
 }
 
+/// 세션 하나의 상세 — `eden list`가 보여주는 것.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub id: u64,
+    /// 셸 프로세스 PID
+    pub pid: u32,
+    pub cols: u16,
+    pub lines: u16,
+    /// 명령 실행 중 (OSC 133 C 이후 D 전)
+    pub running: bool,
+    /// 마지막 명령의 종료 코드
+    pub last_exit: Option<i32>,
+    pub cwd: String,
+    /// 실행 중(또는 마지막) 명령줄. 셸 통합이 안 보내면 빈 문자열.
+    pub command: String,
+    /// 시작된 명령 수 / 끝난 명령 수 (`ShellState` 참고).
+    pub commands: u64,
+    pub completions: u64,
+}
+
+/// `SESSION_INFO` 페이로드 인코딩: `[u32 count]` 뒤에 세션마다
+/// `[u32 len][레코드 본문]`. 본문은 `id u64 · pid u32 · cols u16 · lines u16 ·
+/// running u8 · exit_present u8 · exit i32 · cwd (u16 len + bytes) ·
+/// command (u16 len + bytes) · commands u64 · completions u64`.
+///
+/// 레코드에 길이가 붙어 있으므로 새 필드는 본문 꼬리에 붙이기만 하면 된다 —
+/// `decode_info`는 아는 필드까지 읽고 나머지는 길이만큼 건너뛰므로 구버전
+/// 클라이언트가 신버전 데몬의 응답을 읽을 수 있다 (반대 방향은 없는 필드를
+/// 기본값으로 채우면 되지만, 지금은 필요 없어 잘린 레코드는 버린다).
+fn encode_info(infos: &[SessionInfo]) -> Vec<u8> {
+    let mut out = (infos.len() as u32).to_le_bytes().to_vec();
+    for info in infos {
+        let mut body = Vec::new();
+        body.extend_from_slice(&info.id.to_le_bytes());
+        body.extend_from_slice(&info.pid.to_le_bytes());
+        body.extend_from_slice(&info.cols.to_le_bytes());
+        body.extend_from_slice(&info.lines.to_le_bytes());
+        body.push(info.running as u8);
+        body.push(info.last_exit.is_some() as u8);
+        body.extend_from_slice(&info.last_exit.unwrap_or(0).to_le_bytes());
+        for field in [&info.cwd, &info.command] {
+            let bytes = &field.as_bytes()[..field.len().min(u16::MAX as usize)];
+            body.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            body.extend_from_slice(bytes);
+        }
+        body.extend_from_slice(&info.commands.to_le_bytes());
+        body.extend_from_slice(&info.completions.to_le_bytes());
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+    }
+    out
+}
+
+/// `encode_info`의 역. 잘린 페이로드는 읽을 수 있는 레코드까지만 돌려준다.
+fn decode_info(payload: &[u8]) -> Vec<SessionInfo> {
+    struct Cursor<'a>(&'a [u8]);
+    impl<'a> Cursor<'a> {
+        fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
+            let bytes: [u8; N] = self.0.get(..N)?.try_into().ok()?;
+            self.0 = &self.0[N..];
+            Some(bytes)
+        }
+        fn bytes(&mut self, len: usize) -> Option<&'a [u8]> {
+            let bytes = self.0.get(..len)?;
+            self.0 = &self.0[len..];
+            Some(bytes)
+        }
+        fn string(&mut self) -> Option<String> {
+            let len = u16::from_le_bytes(self.take()?) as usize;
+            Some(String::from_utf8_lossy(self.bytes(len)?).into_owned())
+        }
+    }
+    fn record(body: &[u8]) -> Option<SessionInfo> {
+        let mut cur = Cursor(body);
+        let id = u64::from_le_bytes(cur.take()?);
+        let pid = u32::from_le_bytes(cur.take()?);
+        let cols = u16::from_le_bytes(cur.take()?);
+        let lines = u16::from_le_bytes(cur.take()?);
+        let running = cur.take::<1>()?[0] != 0;
+        let exit_present = cur.take::<1>()?[0] != 0;
+        let exit = i32::from_le_bytes(cur.take()?);
+        let cwd = cur.string()?;
+        let command = cur.string()?;
+        let commands = u64::from_le_bytes(cur.take()?);
+        let completions = u64::from_le_bytes(cur.take()?);
+        // 이 뒤에 남는 바이트는 우리가 모르는 신버전 필드 — 무시한다.
+        Some(SessionInfo {
+            id,
+            pid,
+            cols,
+            lines,
+            running,
+            last_exit: exit_present.then_some(exit),
+            cwd,
+            command,
+            commands,
+            completions,
+        })
+    }
+    let mut cur = Cursor(payload);
+    let Some(count) = cur.take().map(u32::from_le_bytes) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let Some(info) = cur
+            .take()
+            .map(u32::from_le_bytes)
+            .and_then(|len| cur.bytes(len as usize))
+            .and_then(record)
+        else {
+            break;
+        };
+        out.push(info);
+    }
+    out
+}
+
+/// 구독 없이 한 번 묻고 끊는 CLI용 요청. 연결 하나에 요청 하나.
+///
+/// 구버전 데몬은 모르는 태그를 받으면 응답 없이 연결을 닫으므로, 읽기가
+/// EOF로 끝나면 "데몬이 구버전"이라는 뜻이다 — `read_reply`가 그 경우를
+/// 사람이 읽을 수 있는 오류로 바꾼다.
+fn request(tag: u8, payload: &[u8]) -> io::Result<(u8, Vec<u8>)> {
+    let mut stream = connect()?;
+    write_frame(&mut stream, tag, payload)?;
+    match read_frame(&mut stream) {
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Err(io::Error::other(
+            "mux 데몬이 이 명령을 모릅니다 (구버전 데몬). 세션을 모두 닫아 데몬을 재시작하세요",
+        )),
+        other => other,
+    }
+}
+
+/// `OK` 응답을 bool로.
+fn ok_reply(reply: (u8, Vec<u8>)) -> io::Result<bool> {
+    match reply {
+        (OK, payload) => Ok(payload.first().copied().unwrap_or(0) == 1),
+        (tag, _) => Err(io::Error::other(format!("예상 밖 응답 0x{tag:02x}"))),
+    }
+}
+
+/// 세션 상세 목록 (id 오름차순).
+pub fn list_info() -> io::Result<Vec<SessionInfo>> {
+    match request(LIST_INFO, &[])? {
+        (SESSION_INFO, payload) => Ok(decode_info(&payload)),
+        (tag, _) => Err(io::Error::other(format!("예상 밖 응답 0x{tag:02x}"))),
+    }
+}
+
+/// 지정 세션의 PTY에 바이트를 쓴다. 세션이 없으면 Ok(false).
+pub fn send(id: u64, bytes: &[u8]) -> io::Result<bool> {
+    let mut payload = id.to_le_bytes().to_vec();
+    payload.extend_from_slice(bytes);
+    ok_reply(request(SEND, &payload)?)
+}
+
+/// 리플레이 버퍼 스냅샷 — (cols, lines, bytes). 세션이 없으면 Ok(None).
+pub fn peek(id: u64) -> io::Result<Option<(u16, u16, Vec<u8>)>> {
+    match request(PEEK, &id.to_le_bytes())? {
+        (REPLAY, payload) if payload.len() >= 4 => {
+            let cols = u16::from_le_bytes([payload[0], payload[1]]);
+            let lines = u16::from_le_bytes([payload[2], payload[3]]);
+            Ok(Some((cols, lines, payload[4..].to_vec())))
+        }
+        (OK, _) => Ok(None),
+        (tag, _) => Err(io::Error::other(format!("예상 밖 응답 0x{tag:02x}"))),
+    }
+}
+
+/// 붙지 않고 세션만 만든다. GUI는 다음 포커스 때 이 세션을 탭으로 붙인다.
+pub fn spawn(ws: WindowSize, cwd: Option<&str>) -> io::Result<u64> {
+    let mut payload = encode_size(&ws).to_vec();
+    payload.extend_from_slice(cwd.unwrap_or("").as_bytes());
+    match request(SPAWN, &payload)? {
+        (CREATED, payload) if payload.len() >= 8 => {
+            Ok(u64::from_le_bytes(payload[..8].try_into().unwrap()))
+        }
+        (OK, _) => Err(io::Error::other(
+            "세션 생성 실패 (작업 디렉터리를 확인하세요)",
+        )),
+        (tag, _) => Err(io::Error::other(format!("예상 밖 응답 0x{tag:02x}"))),
+    }
+}
+
+/// 지정 세션의 셸에 SIGHUP. 세션이 없으면 Ok(false).
+pub fn kill_id(id: u64) -> io::Result<bool> {
+    ok_reply(request(KILL_ID, &id.to_le_bytes())?)
+}
+
 /// 데몬 읽기 스트림에서 Output/Exit 프레임을 꺼낸다.
 pub enum MuxMsg {
     Output(Vec<u8>),
@@ -246,7 +449,15 @@ pub fn ensure_daemon() -> io::Result<()> {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
-    std::process::Command::new(exe).arg("--daemon").spawn()?;
+    // 표준 입출력을 끊는다. 물려받으면 `id=$(eden new)` 같은 셸 캡처가 데몬이
+    // 파이프 쓰기 끝을 쥐고 있어 영영 EOF를 못 받는다. 데몬은 어차피 아무것도
+    // 출력하지 않는다.
+    std::process::Command::new(exe)
+        .arg("--daemon")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
 
     // 소켓이 준비될 때까지 폴링 (최대 ~3초)
     for _ in 0..150 {
@@ -274,6 +485,37 @@ struct DaemonSession {
     pty: tty::Pty,
     replay: Vec<u8>,
     subscribers: Vec<Sender<Chunk>>,
+    /// 마지막으로 반영한 PTY 크기 — `eden capture`가 같은 크기의 Term으로
+    /// 리플레이를 재생해야 화면이 맞는다.
+    size: WindowSize,
+    /// 출력에서 도출한 셸 상태 (`eden list`·`eden wait`용).
+    shell: ShellState,
+}
+
+impl DaemonSession {
+    fn info(&self, id: u64) -> SessionInfo {
+        SessionInfo {
+            id,
+            pid: self.pty.child().id(),
+            cols: self.size.num_cols,
+            lines: self.size.num_lines,
+            running: self.shell.running,
+            last_exit: self.shell.last_exit,
+            cwd: self.shell.cwd.clone(),
+            command: self.shell.command.clone(),
+            commands: self.shell.commands,
+            completions: self.shell.completions,
+        }
+    }
+
+    fn hangup(&self) {
+        // 셸에 SIGHUP. 리더 스레드가 EOF를 보고 구독자에게 Ended를 알리고
+        // 레지스트리에서 제거한다.
+        let pid = self.pty.child().id();
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGHUP);
+        }
+    }
 }
 
 type Registry = Arc<Mutex<HashMap<u64, Arc<Mutex<DaemonSession>>>>>;
@@ -349,7 +591,9 @@ fn handle_connection(
                 return;
             };
             let id = next_id.fetch_add(1, Ordering::SeqCst);
-            let session = spawn_session(ws, id, Arc::clone(&registry));
+            let Ok(session) = spawn_session(ws, id, Arc::clone(&registry), None) else {
+                return;
+            };
             registry.lock().unwrap().insert(id, Arc::clone(&session));
             serve_subscriber(stream, id, session);
         }
@@ -362,21 +606,115 @@ fn handle_connection(
             if let Some(session) = session {
                 // 붙을 때 크기 반영
                 if let Some(ws) = decode_size(&payload[8..]) {
-                    session.lock().unwrap().pty.on_resize(ws);
+                    let mut s = session.lock().unwrap();
+                    s.pty.on_resize(ws);
+                    s.size = ws;
                 }
                 serve_subscriber(stream, id, session);
             }
+        }
+        // --- 아래는 CLI용 단발 요청. 응답 하나를 쓰고 연결을 끝낸다. ---
+        LIST_INFO => {
+            let sessions: Vec<(u64, Arc<Mutex<DaemonSession>>)> = registry
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, s)| (*id, Arc::clone(s)))
+                .collect();
+            let mut infos: Vec<SessionInfo> = sessions
+                .iter()
+                .map(|(id, s)| s.lock().unwrap().info(*id))
+                .collect();
+            infos.sort_by_key(|i| i.id);
+            let _ = write_frame(&mut stream, SESSION_INFO, &encode_info(&infos));
+        }
+        SEND => {
+            let Some(id) = session_id(&payload) else {
+                return;
+            };
+            let session = registry.lock().unwrap().get(&id).map(Arc::clone);
+            let ok = session.is_some_and(|session| {
+                let s = session.lock().unwrap();
+                s.pty
+                    .file()
+                    .try_clone()
+                    .and_then(|mut f| f.write_all(&payload[8..]))
+                    .is_ok()
+            });
+            let _ = write_frame(&mut stream, OK, &[ok as u8]);
+        }
+        PEEK => {
+            let Some(id) = session_id(&payload) else {
+                return;
+            };
+            let session = registry.lock().unwrap().get(&id).map(Arc::clone);
+            match session {
+                Some(session) => {
+                    let s = session.lock().unwrap();
+                    let mut out = s.size.num_cols.to_le_bytes().to_vec();
+                    out.extend_from_slice(&s.size.num_lines.to_le_bytes());
+                    out.extend_from_slice(&s.replay);
+                    let _ = write_frame(&mut stream, REPLAY, &out);
+                }
+                None => {
+                    let _ = write_frame(&mut stream, OK, &[0]);
+                }
+            }
+        }
+        SPAWN => {
+            let Some(ws) = decode_size(&payload) else {
+                return;
+            };
+            let cwd = std::str::from_utf8(&payload[8..])
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from);
+            let id = next_id.fetch_add(1, Ordering::SeqCst);
+            match spawn_session(ws, id, Arc::clone(&registry), cwd) {
+                Ok(session) => {
+                    registry.lock().unwrap().insert(id, session);
+                    let _ = write_frame(&mut stream, CREATED, &id.to_le_bytes());
+                }
+                Err(_) => {
+                    let _ = write_frame(&mut stream, OK, &[0]);
+                }
+            }
+        }
+        KILL_ID => {
+            let Some(id) = session_id(&payload) else {
+                return;
+            };
+            let session = registry.lock().unwrap().get(&id).map(Arc::clone);
+            let ok = session.is_some_and(|session| {
+                session.lock().unwrap().hangup();
+                true
+            });
+            let _ = write_frame(&mut stream, OK, &[ok as u8]);
         }
         _ => {}
     }
 }
 
+/// 페이로드 앞 8바이트의 세션 ID.
+fn session_id(payload: &[u8]) -> Option<u64> {
+    payload
+        .get(..8)
+        .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+}
+
 /// PTY에 셸을 띄우고, 출력을 리플레이 버퍼 + 구독자에게 뿌리는 리더 스레드를 시작한다.
-fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<DaemonSession>> {
-    // 데몬은 Dock에서 실행된 앱이 띄워 cwd가 `/`다. 지정하지 않으면
-    // 셸이 그걸 상속해 `/`에서 시작하므로 홈 디렉터리를 명시한다.
+///
+/// `cwd`가 None이면 홈 디렉터리. 데몬은 Dock에서 실행된 앱이 띄워 cwd가 `/`라,
+/// 지정하지 않으면 셸이 그걸 상속해 `/`에서 시작하기 때문에 명시한다.
+/// 디렉터리가 없으면 PTY 생성이 실패하고 Err — 데몬을 죽이지 않는다.
+fn spawn_session(
+    ws: WindowSize,
+    id: u64,
+    registry: Registry,
+    cwd: Option<PathBuf>,
+) -> io::Result<Arc<Mutex<DaemonSession>>> {
     let mut options = tty::Options {
-        working_directory: std::env::var("HOME").ok().map(PathBuf::from),
+        working_directory: cwd.or_else(|| std::env::var("HOME").ok().map(PathBuf::from)),
         ..Default::default()
     };
     options
@@ -395,7 +733,7 @@ fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<Daemo
             .env
             .insert("ZDOTDIR".to_string(), shell_dir.display().to_string());
     }
-    let pty = tty::new(&options, ws, 0).expect("PTY 생성 실패");
+    let pty = tty::new(&options, ws, 0)?;
 
     // master fd를 블로킹으로 (tty::new가 논블로킹으로 만든다)
     let master_fd = pty.file().as_raw_fd();
@@ -409,6 +747,8 @@ fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<Daemo
         pty,
         replay: Vec::new(),
         subscribers: Vec::new(),
+        size: ws,
+        shell: ShellState::default(),
     }));
 
     let reader_session = Arc::clone(&session);
@@ -422,6 +762,7 @@ fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<Daemo
                     let mut s = reader_session.lock().unwrap();
                     s.replay.extend_from_slice(data);
                     trim_replay(&mut s.replay);
+                    s.shell.feed(data);
                     let chunk = Chunk::Data(data.to_vec());
                     s.subscribers.retain(|tx| tx.send(chunk.clone()).is_ok());
                 }
@@ -443,7 +784,7 @@ fn spawn_session(ws: WindowSize, id: u64, registry: Registry) -> Arc<Mutex<Daemo
         }
     });
 
-    session
+    Ok(session)
 }
 
 /// 한 클라이언트 연결을 세션 구독자로 서비스한다.
@@ -502,16 +843,13 @@ fn serve_subscriber(stream: UnixStream, id: u64, session: Arc<Mutex<DaemonSessio
             }
             Ok((RESIZE, payload)) => {
                 if let Some(ws) = decode_size(&payload) {
-                    session.lock().unwrap().pty.on_resize(ws);
+                    let mut s = session.lock().unwrap();
+                    s.pty.on_resize(ws);
+                    s.size = ws;
                 }
             }
             Ok((KILL, _)) => {
-                // 세션 종료: 셸에 SIGHUP을 보낸다. 리더 스레드가 EOF를 보고
-                // 구독자에게 Ended를 알리고 레지스트리에서 제거한다.
-                let pid = session.lock().unwrap().pty.child().id();
-                unsafe {
-                    libc::kill(pid as libc::pid_t, libc::SIGHUP);
-                }
+                session.lock().unwrap().hangup();
                 break;
             }
             Ok(_) => {}
@@ -565,6 +903,79 @@ fn install_shell_integration() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample() -> Vec<SessionInfo> {
+        vec![
+            SessionInfo {
+                id: 1,
+                pid: 4242,
+                cols: 120,
+                lines: 40,
+                running: true,
+                last_exit: None,
+                cwd: "/Users/me/프로젝트".into(),
+                command: "cargo test -- --nocapture".into(),
+                commands: 12,
+                completions: 11,
+            },
+            SessionInfo {
+                id: 7,
+                pid: 1,
+                cols: 80,
+                lines: 24,
+                running: false,
+                last_exit: Some(130),
+                cwd: String::new(),
+                command: String::new(),
+                commands: 0,
+                completions: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn session_info_round_trips() {
+        let infos = sample();
+        assert_eq!(decode_info(&encode_info(&infos)), infos);
+        assert_eq!(decode_info(&encode_info(&[])), Vec::<SessionInfo>::new());
+    }
+
+    #[test]
+    fn truncated_info_yields_the_complete_records_only() {
+        let bytes = encode_info(&sample());
+        // 두 번째 레코드 중간에서 잘리면 첫 레코드만 나온다
+        let cut = bytes.len() - 3;
+        assert_eq!(decode_info(&bytes[..cut]), sample()[..1].to_vec());
+        assert!(decode_info(&[]).is_empty());
+        assert!(decode_info(&[9, 0, 0, 0]).is_empty());
+    }
+
+    #[test]
+    fn unknown_trailing_record_fields_are_skipped() {
+        // 신버전 데몬이 레코드 꼬리에 필드를 더 붙여도 구버전 디코더가 읽는다
+        let infos = sample();
+        let mut bytes = encode_info(&infos[..1]);
+        let len_at = 4;
+        let len = u32::from_le_bytes(bytes[len_at..len_at + 4].try_into().unwrap());
+        bytes.extend_from_slice(&[0xAA; 5]);
+        bytes[len_at..len_at + 4].copy_from_slice(&(len + 5).to_le_bytes());
+        assert_eq!(decode_info(&bytes), infos[..1].to_vec());
+    }
+
+    #[test]
+    fn oversized_strings_are_clamped_to_u16() {
+        let mut info = sample().remove(1);
+        info.command = "x".repeat(70_000);
+        let back = decode_info(&encode_info(std::slice::from_ref(&info)));
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].command.len(), u16::MAX as usize);
+    }
+
+    #[test]
+    fn session_id_needs_eight_bytes() {
+        assert_eq!(session_id(&[1, 0, 0, 0, 0, 0, 0, 0, 9]), Some(1));
+        assert_eq!(session_id(&[1, 0, 0]), None);
+    }
 
     #[test]
     fn short_home_uses_the_cache_path() {

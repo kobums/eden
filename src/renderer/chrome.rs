@@ -1,7 +1,7 @@
 //! UI 크롬: 탭 바, 하단 상태바, AI 입력 바, 커맨드 팔레트 오버레이.
 
 use super::text::FontSize;
-use super::{BgInstance, Renderer, TextInstance};
+use super::{BgInstance, Renderer, TabLabel, TabStatus, TextInstance};
 
 /// AI 입력 바 배경색.
 const AI_BAR_BG: [f32; 3] = [0.1, 0.14, 0.24];
@@ -43,9 +43,12 @@ impl Renderer {
 
     /// 탭 바. iTerm2 스타일: 제목만 가운데 정렬, 작은 UI 폰트, 얇은 구분선.
     /// 크롬 색은 테마 배경에서 파생한다 (활성 탭이 비활성보다 살짝 밝음).
+    ///
+    /// 탭의 셸 상태(`TabStatus`)는 제목 앞의 점으로 나타낸다. 색은 블록
+    /// 거터와 같은 의미다 — 실행 중·성공·실패. 점이 없으면 조용한 탭이다.
     pub(super) fn draw_tab_bar(
         &mut self,
-        tab_titles: &[String],
+        tabs: &[TabLabel],
         active_tab: usize,
         bg_instances: &mut Vec<BgInstance>,
         text_instances: &mut Vec<TextInstance>,
@@ -56,13 +59,22 @@ impl Renderer {
 
         fill(bg_instances, [0.0, 0.0, width, bar_h], theme.chrome());
 
-        let tab_count = tab_titles.len().max(1);
+        let tab_count = tabs.len().max(1);
         let tab_width = width / tab_count as f32;
         let label_y = (bar_h - self.ui_line_height) / 2.0;
         let pad = self.ui_advance;
+        // 상태 점 + 간격. 점이 있을 때만 폭을 차지해 제목이 여전히 가운데 온다.
+        let dot_w = self.ui_advance * 1.6;
 
-        for (i, title) in tab_titles.iter().enumerate() {
+        for (i, TabLabel { title, status }) in tabs.iter().enumerate() {
             let tab_x = i as f32 * tab_width;
+            let dot = match status {
+                TabStatus::Idle => None,
+                TabStatus::Running => Some(theme.block_running),
+                TabStatus::Done(Some(0)) => Some(theme.block_ok),
+                TabStatus::Done(_) => Some(theme.block_fail),
+            };
+            let dot_space = if dot.is_some() { dot_w } else { 0.0 };
             // 탭이 하나뿐이면 강조할 대상이 없으므로 크롬 배경 그대로 둔다.
             if i == active_tab && tab_count > 1 {
                 fill(
@@ -79,8 +91,20 @@ impl Renderer {
 
             // 제목만 표시 (번호 없음), 폭에 맞게 자르고 가운데 정렬
             let (label, label_w) =
-                self.truncate_to_width(title, tab_width - pad * 2.0, FontSize::Ui);
-            let label_x = tab_x + ((tab_width - label_w) / 2.0).max(pad);
+                self.truncate_to_width(title, tab_width - pad * 2.0 - dot_space, FontSize::Ui);
+            let start_x = tab_x + ((tab_width - label_w - dot_space) / 2.0).max(pad);
+            if let Some(color) = dot {
+                self.draw_text(
+                    "●",
+                    start_x,
+                    label_y,
+                    tab_x + tab_width,
+                    color,
+                    FontSize::Ui,
+                    text_instances,
+                );
+            }
+            let label_x = start_x + dot_space;
             self.draw_text(
                 &label,
                 label_x,

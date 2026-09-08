@@ -174,7 +174,7 @@ impl App {
         duration: Duration,
         exit: Option<i32>,
     ) {
-        let Some(state) = &self.state else { return };
+        let Some(state) = &mut self.state else { return };
         let Some(tab_index) = state
             .tabs
             .iter()
@@ -182,6 +182,15 @@ impl App {
         else {
             return; // 페인이 이미 닫혔다
         };
+        // 보고 있지 않을 때 끝났으면 탭 바에 점을 남긴다. 알림과 달리 임계
+        // 시간이 없다 — 알림은 방해지만 점은 조용하고, 짧은 명령도 "끝났다"는
+        // 사실 자체가 에이전트 대시보드에서는 정보다.
+        if !(self.window_focused && tab_index == state.active)
+            && let Some(pane) = state.tabs[tab_index].root.pane_mut(pane_id)
+        {
+            pane.unseen_exit = Some(exit);
+            state.window.request_redraw();
+        }
         if !should_notify_command(
             self.config.notify,
             Duration::from_secs(self.config.notify_threshold),

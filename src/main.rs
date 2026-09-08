@@ -11,9 +11,11 @@
 
 mod ai;
 mod app;
+mod cli;
 mod config;
 mod layout;
 mod mux;
+mod osc;
 mod renderer;
 mod session;
 
@@ -49,6 +51,11 @@ fn main() {
     // `--daemon`: mux 데몬으로 실행 (세션/PTY 소유, GUI와 독립적으로 생존)
     if std::env::args().any(|a| a == "--daemon") {
         mux::run_daemon();
+    }
+    // `eden list` 같은 서브커맨드: GUI 없이 데몬에 묻고 끝낸다.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cli::run(&args) {
+        std::process::exit(code);
     }
 
     let event_loop = EventLoop::<AppEvent>::with_user_event()

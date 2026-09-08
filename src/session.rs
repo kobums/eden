@@ -15,6 +15,12 @@ use alacritty_terminal::vte::ansi::Processor;
 use winit::event_loop::EventLoopProxy;
 
 use crate::mux::{self, MuxClient, MuxMsg};
+use crate::osc::{
+    self, OSC7_PREFIX, OSC133_PREFIX, collect_osc_payloads, find_subsequence,
+    longest_prefix_suffix, parse_mark_kind,
+};
+
+pub use crate::osc::MarkKind;
 
 /// 앱 이벤트: 터미널 이벤트(페인 ID 태깅), AI 생성 결과, 또는 Quake 전역 핫키.
 pub enum AppEvent {
@@ -101,17 +107,6 @@ impl Dimensions for TermSize {
     fn columns(&self) -> usize {
         self.columns
     }
-}
-
-/// OSC 133 마크 종류.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MarkKind {
-    /// `133;A` — 프롬프트 시작
-    PromptStart,
-    /// `133;C` — 명령 출력 시작
-    CommandStart,
-    /// `133;D;<exit>` — 명령 종료
-    CommandEnd(Option<i32>),
 }
 
 /// 셸 통합 마크. `abs_line`은 스크롤백을 포함한 절대 줄 번호로,
@@ -318,6 +313,12 @@ impl Session {
         blocks
     }
 
+    /// 명령이 실행 중인가 — 마지막 마크가 C(CommandStart)다.
+    pub fn is_running(&self) -> bool {
+        let marks = self.marks.lock().unwrap();
+        matches!(marks.last().map(|m| m.kind), Some(MarkKind::CommandStart))
+    }
+
     /// 마지막으로 완료된 명령의 출력 범위 [시작, 끝] (절대 줄 번호).
     pub fn last_output_range(&self) -> Option<(i64, i64)> {
         self.blocks().iter().rev().find_map(|block| {
@@ -388,8 +389,6 @@ impl Session {
 
 // --- mux 읽기 루프 + OSC 133 스캐너 ---
 
-const OSC133_PREFIX: &[u8] = b"\x1b]133;";
-
 /// Synchronized output (DEC private mode 2026)의 진입/종료 시퀀스.
 /// 공통 프리픽스 뒤 'h'(진입) 또는 'l'(종료).
 const SYNC_PREFIX: &[u8] = b"\x1b[?2026";
@@ -454,49 +453,12 @@ fn reader_loop(
 }
 
 /// 바이트 스트림에서 OSC 7(`ESC ] 7 ; file://host/path BEL|ST`)을 찾아 경로를
-/// 돌려준다. 청크 경계에 걸친 시퀀스를 위해 carry를 유지한다.
+/// 돌려준다. 여러 개면 마지막 값만 유효하다. 청크 경계는 carry가 처리한다.
 fn watch_cwd(carry: &mut Vec<u8>, chunk: &[u8]) -> Option<String> {
-    const PREFIX: &[u8] = b"\x1b]7;";
-    carry.extend_from_slice(chunk);
-    let mut result = None;
-
-    loop {
-        let Some(start) = find_subsequence(carry, PREFIX) else {
-            // 프리픽스 없음: 경계에 걸린 프리픽스 후보만 남긴다
-            let keep = longest_prefix_suffix(carry, PREFIX);
-            let cut = carry.len() - keep;
-            carry.drain(..cut);
-            break;
-        };
-        let body = start + PREFIX.len();
-        // 종료: BEL(0x07) 또는 ST(ESC \)
-        let Some(rel) = carry[body..].iter().position(|&b| b == 0x07 || b == 0x1b) else {
-            // 종료 미도착: 프리픽스부터 보관하고 대기
-            carry.drain(..start);
-            break;
-        };
-        let term_pos = body + rel;
-        let end = if carry[term_pos] == 0x1b {
-            if term_pos + 1 >= carry.len() {
-                carry.drain(..start); // ST 미완성, 대기
-                break;
-            }
-            term_pos + 2
-        } else {
-            term_pos + 1
-        };
-        if let Some(path) = parse_osc7(&carry[body..term_pos]) {
-            result = Some(path);
-        }
-        carry.drain(..end);
-    }
-
-    // carry 무한 증가 방지
-    if carry.len() > 8192 {
-        let cut = carry.len() - 8192;
-        carry.drain(..cut);
-    }
-    result
+    collect_osc_payloads(carry, chunk, OSC7_PREFIX)
+        .iter()
+        .filter_map(|p| osc::parse_osc7(p))
+        .next_back()
 }
 
 /// iTerm2 알림: `ESC ] 9 ; <본문> BEL|ST`
@@ -528,49 +490,6 @@ fn watch_notify(
     out
 }
 
-/// 바이트 스트림에서 `prefix … BEL|ST` 페이로드를 전부 수집한다.
-/// carry 규칙은 `watch_cwd`와 같다: 청크 경계에 걸친 시퀀스는 이월하고,
-/// 종료 문자가 영영 안 오는 스트림 때문에 carry가 무한히 크지 않게 상한을 둔다.
-fn collect_osc_payloads(carry: &mut Vec<u8>, chunk: &[u8], prefix: &[u8]) -> Vec<Vec<u8>> {
-    carry.extend_from_slice(chunk);
-    let mut out = Vec::new();
-
-    loop {
-        let Some(start) = find_subsequence(carry, prefix) else {
-            // 프리픽스 없음: 경계에 걸린 프리픽스 후보만 남긴다
-            let keep = longest_prefix_suffix(carry, prefix);
-            let cut = carry.len() - keep;
-            carry.drain(..cut);
-            break;
-        };
-        let body = start + prefix.len();
-        // 종료: BEL(0x07) 또는 ST(ESC \)
-        let Some(rel) = carry[body..].iter().position(|&b| b == 0x07 || b == 0x1b) else {
-            carry.drain(..start); // 종료 미도착: 프리픽스부터 보관하고 대기
-            break;
-        };
-        let term_pos = body + rel;
-        let end = if carry[term_pos] == 0x1b {
-            if term_pos + 1 >= carry.len() {
-                carry.drain(..start); // ST 미완성, 대기
-                break;
-            }
-            term_pos + 2
-        } else {
-            term_pos + 1
-        };
-        out.push(carry[body..term_pos].to_vec());
-        carry.drain(..end);
-    }
-
-    // carry 무한 증가 방지
-    if carry.len() > 8192 {
-        let cut = carry.len() - 8192;
-        carry.drain(..cut);
-    }
-    out
-}
-
 /// OSC 9 본문. 사람에게 보여줄 텍스트이므로 UTF-8이 아니거나 비어 있으면 버린다.
 fn parse_osc9(payload: &[u8]) -> Option<String> {
     let body = std::str::from_utf8(payload).ok()?.trim();
@@ -585,34 +504,6 @@ fn parse_osc777(payload: &[u8]) -> Option<(String, String)> {
     let rest = s.strip_prefix("notify;")?;
     let (title, body) = rest.split_once(';').unwrap_or((rest, ""));
     Some((title.to_string(), body.to_string()))
-}
-
-/// `file://hostname/path` → `/path` (퍼센트 디코딩).
-fn parse_osc7(payload: &[u8]) -> Option<String> {
-    let s = std::str::from_utf8(payload).ok()?;
-    let rest = s.strip_prefix("file://")?;
-    // 호스트 이후 첫 '/'부터가 경로
-    let path = match rest.find('/') {
-        Some(i) => &rest[i..],
-        None => rest,
-    };
-    // 퍼센트 디코딩 (%20 등)
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let h = |c: u8| (c as char).to_digit(16);
-            if let (Some(a), Some(b)) = (h(bytes[i + 1]), h(bytes[i + 2])) {
-                out.push((a * 16 + b) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).ok()
 }
 
 /// 청크에서 mode 2026 진입(`h`)/종료(`l`)를 감지해 최신 sync 상태를 돌려준다.
@@ -726,28 +617,6 @@ impl Osc133Scanner {
 }
 
 /// OSC 133 페이로드(`A`, `C`, `D;0` 등)를 마크로 기록한다.
-/// OSC 133 페이로드 → 마크 종류.
-///
-/// 셸마다 형식이 조금씩 다르다. 첫 글자로만 분기하므로 뒤에 붙는 파라미터는
-/// 무시된다 — 그래서 셋 다 그대로 동작한다:
-///   zsh/bash(자체 스크립트) `A` `C` `D;0`
-///   fish(자체 내장, 3.4+)    `A;click_events=1` `C;cmdline_url=ls` `D;1`
-fn parse_mark_kind(payload: &[u8]) -> Option<MarkKind> {
-    match payload.first() {
-        Some(b'A') => Some(MarkKind::PromptStart),
-        Some(b'C') => Some(MarkKind::CommandStart),
-        Some(b'D') => {
-            let exit = payload
-                .get(2..)
-                .and_then(|s| std::str::from_utf8(s).ok())
-                .and_then(|s| s.parse().ok());
-            Some(MarkKind::CommandEnd(exit))
-        }
-        // B(프롬프트 끝) 등은 아직 사용하지 않음
-        _ => None,
-    }
-}
-
 fn record_mark(term: &Term<EventProxy>, marks: &Marks, proxy: &EventProxy, payload: &[u8]) {
     let Some(kind) = parse_mark_kind(payload) else {
         return;
@@ -804,24 +673,6 @@ fn last_command_duration(marks: &[Mark]) -> Option<Duration> {
         }
     }
     None
-}
-
-/// `haystack`에서 `needle`의 첫 위치.
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-/// `data`의 접미사 중 `pattern`의 진접두사인 최장 길이.
-fn longest_prefix_suffix(data: &[u8], pattern: &[u8]) -> usize {
-    let max = (pattern.len() - 1).min(data.len());
-    for len in (1..=max).rev() {
-        if data[data.len() - len..] == pattern[..len] {
-            return len;
-        }
-    }
-    0
 }
 
 #[cfg(test)]
@@ -934,52 +785,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zsh_and_bash_marks() {
-        // 우리 통합 스크립트가 내보내는 형식.
-        assert_eq!(parse_mark_kind(b"A"), Some(MarkKind::PromptStart));
-        assert_eq!(parse_mark_kind(b"C"), Some(MarkKind::CommandStart));
-        assert_eq!(parse_mark_kind(b"D;0"), Some(MarkKind::CommandEnd(Some(0))));
-        assert_eq!(
-            parse_mark_kind(b"D;130"),
-            Some(MarkKind::CommandEnd(Some(130))),
-            "여러 자리 종료 코드 (Ctrl+C 등)"
-        );
-    }
-
-    #[test]
-    fn fish_marks_with_parameters() {
-        // fish 3.4+가 자체적으로 내보내는 형식 — 파라미터가 붙는다.
-        // 실측값(fish 4.8.1)이다.
-        assert_eq!(
-            parse_mark_kind(b"A;click_events=1"),
-            Some(MarkKind::PromptStart)
-        );
-        assert_eq!(
-            parse_mark_kind(b"C;cmdline_url=false"),
-            Some(MarkKind::CommandStart)
-        );
-        assert_eq!(parse_mark_kind(b"D;1"), Some(MarkKind::CommandEnd(Some(1))));
-    }
-
-    #[test]
-    fn prompt_end_and_unknown_marks_are_ignored() {
-        assert_eq!(parse_mark_kind(b"B"), None, "B는 아직 쓰지 않는다");
-        assert_eq!(parse_mark_kind(b"X"), None);
-        assert_eq!(parse_mark_kind(b""), None);
-    }
-
-    #[test]
-    fn missing_or_malformed_exit_code_becomes_none() {
-        // 종료 코드가 없거나 숫자가 아니면 "실행 중"이 아니라 "코드 모름"이다.
-        assert_eq!(parse_mark_kind(b"D"), Some(MarkKind::CommandEnd(None)));
-        assert_eq!(parse_mark_kind(b"D;"), Some(MarkKind::CommandEnd(None)));
-        assert_eq!(parse_mark_kind(b"D;abc"), Some(MarkKind::CommandEnd(None)));
-    }
-
-    // --- 소요 시간 계산 (Phase 17) ---
-
-    /// t0 + secs초 시각의 마크. abs_line은 소요 시간 계산과 무관하다.
     fn mark_at(kind: MarkKind, t0: Instant, secs: u64) -> Mark {
         Mark {
             kind,

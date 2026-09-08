@@ -240,6 +240,7 @@ impl App {
             id,
             session,
             title: "zsh".to_string(),
+            unseen_exit: None,
         }
     }
 
@@ -279,6 +280,7 @@ impl App {
             id,
             session,
             title: "zsh".to_string(),
+            unseen_exit: None,
         };
         let state = self.state.as_mut().unwrap();
         state.tabs.push(Tab {
@@ -519,6 +521,16 @@ impl App {
             active,
         } = state;
         let content = content_rect(window, renderer);
+        // 활성 탭은 지금 보고 있는 것이다 — 미확인 완료 표시를 지운다.
+        // "그려졌다 = 봤다"로 두면 탭을 바꾸는 경로가 몇 개든 한 곳에서 끝난다.
+        {
+            let ids: Vec<usize> = tabs[*active].root.panes().iter().map(|p| p.id).collect();
+            for id in ids {
+                if let Some(pane) = tabs[*active].root.pane_mut(id) {
+                    pane.unseen_exit = None;
+                }
+            }
+        }
         let tab = &tabs[*active];
         let focused = tab.focused;
         let rects = tab.layout(content);
@@ -558,7 +570,7 @@ impl App {
             })
             .collect();
 
-        let titles: Vec<String> = tabs
+        let labels: Vec<renderer::TabLabel> = tabs
             .iter()
             .map(|t| {
                 let title = t
@@ -568,11 +580,21 @@ impl App {
                     .unwrap_or_else(|| "zsh".to_string());
                 // 줌 중에는 다른 페인이 사라진 것처럼 보이므로 표시가 필요하다.
                 // tmux가 윈도우 플래그에 Z를 붙이는 것과 같은 관례.
-                if t.zoomed {
+                let title = if t.zoomed {
                     format!("{title} [Z]")
                 } else {
                     title
-                }
+                };
+                // 실행 중이 미확인 완료보다 우선한다 — "아직 돌고 있다"가 더 급한 정보.
+                let panes = t.root.panes();
+                let status = if panes.iter().any(|p| p.session.is_running()) {
+                    renderer::TabStatus::Running
+                } else if let Some(exit) = panes.iter().find_map(|p| p.unseen_exit) {
+                    renderer::TabStatus::Done(exit)
+                } else {
+                    renderer::TabStatus::Idle
+                };
+                renderer::TabLabel { title, status }
             })
             .collect();
 
@@ -583,7 +605,7 @@ impl App {
         let ime_pos = renderer.draw(renderer::DrawParams {
             panes: &views,
             preedit: pane_preedit.as_deref(),
-            tab_titles: &titles,
+            tabs: &labels,
             active_tab: *active,
             ai_bar: ai_line.as_deref(),
             search: search_bar
@@ -697,7 +719,13 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             // 알림 조건("보고 있지 않을 때만")에 쓰인다. 포커스를 되찾았을 때
             // Dock 바운스를 멈추는 것은 시스템이 알아서 한다.
-            WindowEvent::Focused(focused) => self.window_focused = focused,
+            WindowEvent::Focused(focused) => {
+                self.window_focused = focused;
+                // `eden new`로 밖에서 만든 세션은 창을 다시 볼 때 탭으로 붙인다.
+                if focused {
+                    self.attach_orphans();
+                }
+            }
             // macOS 라이트/다크 전환 — 설정을 새 외양 기준으로 다시 읽는다.
             WindowEvent::ThemeChanged(theme) => self.on_theme_changed(theme),
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -822,6 +850,31 @@ impl App {
         self.save_layout();
     }
 
+    /// 데몬에는 살아있지만 어느 탭에도 없는 세션을 단독 탭으로 붙인다.
+    ///
+    /// GUI 밖에서 만든 세션(`eden new`)이 여기로 들어온다. 창 포커스 때
+    /// 부르므로 데몬에 LIST 한 번 묻는 값싼 일이고, 사용자가 창을 볼 때
+    /// 새 탭이 이미 있는 것이 자연스럽다. 이미 GUI가 만든 세션은 탭에 있으므로
+    /// 건너뛴다.
+    fn attach_orphans(&mut self) {
+        let Some(state) = &self.state else { return };
+        let known: std::collections::HashSet<u64> = state
+            .tabs
+            .iter()
+            .flat_map(|t| t.root.panes())
+            .map(|p| p.session.id())
+            .collect();
+        let (alive, _) = session::Session::list();
+        let orphans: Vec<u64> = alive.into_iter().filter(|id| !known.contains(id)).collect();
+        if orphans.is_empty() {
+            return;
+        }
+        for id in orphans {
+            self.attach_tab(id);
+        }
+        self.save_layout();
+    }
+
     /// 복원 계획(세션 ID 트리) 하나를 탭으로 붙인다. 탭이 만들어졌으면 true.
     ///
     /// list()와 attach 사이에 세션이 죽을 수 있으므로, attach에 실패한 leaf는
@@ -901,6 +954,7 @@ impl App {
                     id,
                     session,
                     title: "zsh".to_string(),
+                    unseen_exit: None,
                 }))
             }
             PaneNode::Split {

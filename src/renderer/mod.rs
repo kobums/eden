@@ -31,7 +31,7 @@ use text::Atlas;
 pub struct DrawParams<'a> {
     pub panes: &'a [PaneView<'a>],
     pub preedit: Option<&'a str>,
-    pub tab_titles: &'a [String],
+    pub tabs: &'a [TabLabel],
     pub active_tab: usize,
     /// AI 입력 바 한 줄 (Cmd+K).
     pub ai_bar: Option<&'a str>,
@@ -41,6 +41,24 @@ pub struct DrawParams<'a> {
     pub palette: Option<(&'a str, &'a [String], usize)>,
     /// 하단 상태바: (왼쪽, 오른쪽).
     pub status: Option<(&'a str, &'a str)>,
+}
+
+/// 탭 바의 탭 하나.
+pub struct TabLabel {
+    pub title: String,
+    pub status: TabStatus,
+}
+
+/// 탭 바에 점으로 표시되는 탭의 셸 상태 — 여러 페인의 AI 에이전트를 돌릴 때
+/// "어느 탭이 아직 돌고 있고 어느 탭이 입력을 기다리나"를 한눈에 보기 위한 것.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabStatus {
+    /// 표시 없음.
+    Idle,
+    /// 어느 페인이든 명령 실행 중.
+    Running,
+    /// 보고 있지 않을 때 명령이 끝났고 아직 그 탭을 보지 않았다 (종료 코드).
+    Done(Option<i32>),
 }
 
 /// 한 페인을 그리는 데 필요한 정보.
@@ -531,7 +549,7 @@ impl Renderer {
         let DrawParams {
             panes,
             preedit,
-            tab_titles,
+            tabs,
             active_tab,
             ai_bar,
             search,
@@ -559,12 +577,7 @@ impl Renderer {
             }
         }
 
-        self.draw_tab_bar(
-            tab_titles,
-            active_tab,
-            &mut bg_instances,
-            &mut text_instances,
-        );
+        self.draw_tab_bar(tabs, active_tab, &mut bg_instances, &mut text_instances);
         // AI 바·검색 바·팔레트는 오버레이이므로 마지막에 (페인 위에) 그린다.
         if let Some(line) = ai_bar {
             ime_pos = Some(self.draw_ai_bar(line, &mut bg_instances, &mut text_instances));
