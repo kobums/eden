@@ -61,6 +61,26 @@ impl App {
         }
     }
 
+    /// 명령줄을 포커스된 페인의 입력줄에 넣는다 — **실행하지 않는다**.
+    ///
+    /// 브래킷 붙여넣기가 켜져 있으면(zsh·bash·fish 프롬프트의 기본값) 여러 줄
+    /// 명령도 그대로 넣는다. 꺼져 있으면 개행이 곧 실행이므로 공백으로 바꿔
+    /// 한 줄로 만든다 — `paste_text`의 `\n → \r`은 여기서는 사고다.
+    pub(super) fn insert_command(&mut self, cmd: &str) {
+        let Some(state) = &self.state else { return };
+        let session = &state.focused_pane().session;
+        let bracketed = session
+            .term
+            .lock()
+            .mode()
+            .contains(TermMode::BRACKETED_PASTE);
+        if bracketed {
+            self.paste_text(cmd);
+        } else {
+            session.write(cmd.replace(['\r', '\n'], " ").into_bytes());
+        }
+    }
+
     /// 파일을 창에 드롭하면 경로를 셸 인용해 붙여넣는다 (Terminal.app·iTerm2
     /// 관례). 끝의 공백은 여러 파일을 연달아 드롭했을 때 경로가 붙지 않게 한다.
     pub(super) fn drop_file(&mut self, path: &std::path::Path) {

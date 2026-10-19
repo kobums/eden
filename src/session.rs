@@ -47,6 +47,14 @@ pub enum AppEvent {
         seq: u64,
         result: Result<String, String>,
     },
+    /// `eden focus` — 데몬이 이 페인의 세션을 앞으로 가져오라고 했다.
+    FocusPane {
+        pane_id: usize,
+    },
+    /// 세션 이름이 바뀌었다 (`Session::name`은 이미 갱신됨) — 제목 다시 반영.
+    Renamed {
+        pane_id: usize,
+    },
     /// Quake 드롭다운 토글 (전역 핫키)
     QuakeToggle,
     /// 상태바 갱신용 주기적 틱 (~1초)
@@ -71,6 +79,19 @@ impl EventProxy {
             pane_id: self.tab_id,
             duration,
             exit,
+        });
+    }
+
+    /// `eden focus` 요청을 App으로 보낸다 (탭 전환·창 활성화는 메인 스레드에서).
+    fn send_focus(&self) {
+        let _ = self.proxy.send_event(AppEvent::FocusPane {
+            pane_id: self.tab_id,
+        });
+    }
+
+    fn send_renamed(&self) {
+        let _ = self.proxy.send_event(AppEvent::Renamed {
+            pane_id: self.tab_id,
         });
     }
 
@@ -111,13 +132,17 @@ impl Dimensions for TermSize {
 
 /// 셸 통합 마크. `abs_line`은 스크롤백을 포함한 절대 줄 번호로,
 /// 줄이 히스토리로 밀려도 값이 유지된다 (히스토리 상한 초과 시 오차 발생 가능).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Mark {
     pub kind: MarkKind,
     pub abs_line: i64,
     /// 기록 시각. 소요 시간 계산에만 쓰므로 벽시계가 아니라 단조 시계면
     /// 충분하다 (직렬화하지 않는다).
     pub at: Instant,
+    /// C 마크의 `cmdline_url` — 명령 히스토리 팔레트용. 셸 통합이 안 보내면 None.
+    /// zsh/bash 스크립트는 512바이트에서 자르므로 그대로 실행하면 안 된다
+    /// (히스토리는 프롬프트에 넣기만 한다).
+    pub cmdline: Option<String>,
 }
 
 pub type Marks = Arc<Mutex<Vec<Mark>>>;
@@ -157,6 +182,8 @@ pub struct Session {
     pub marks: Marks,
     /// OSC 7으로 보고된 현재 작업 디렉터리 (상태바용).
     pub cwd: Arc<Mutex<String>>,
+    /// 데몬이 알려준 세션 이름 (`eden rename`). 비어 있으면 탭에 셸 제목을 쓴다.
+    pub name: Arc<Mutex<String>>,
     client: Arc<MuxClient>,
 }
 
@@ -233,6 +260,7 @@ impl Session {
         let term = Arc::new(FairMutex::new(term));
         let marks: Marks = Arc::new(Mutex::new(Vec::new()));
         let cwd: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let name: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
         // 읽기 스레드: 데몬이 보내는 출력(리플레이 + 라이브)을
         // OSC 133 스캐너를 거쳐 파서에 공급한다.
@@ -240,11 +268,12 @@ impl Session {
             let term = Arc::clone(&term);
             let marks = Arc::clone(&marks);
             let cwd = Arc::clone(&cwd);
+            let name = Arc::clone(&name);
             let proxy = proxy.clone();
             std::thread::Builder::new()
                 .name("mux-reader".into())
                 .spawn(move || {
-                    reader_loop(read_stream, term, marks, cwd, proxy, attached);
+                    reader_loop(read_stream, term, marks, cwd, name, proxy, attached);
                 })
                 .expect("읽기 스레드 생성 실패");
         }
@@ -253,6 +282,7 @@ impl Session {
             term,
             marks,
             cwd,
+            name,
             client: Arc::new(client),
         }
     }
@@ -317,6 +347,12 @@ impl Session {
     pub fn is_running(&self) -> bool {
         let marks = self.marks.lock().unwrap();
         matches!(marks.last().map(|m| m.kind), Some(MarkKind::CommandStart))
+    }
+
+    /// 이 세션에서 실행한 명령줄, 최근 것부터 (중복은 가장 최근 하나만).
+    pub fn command_history(&self) -> Vec<String> {
+        let marks = self.marks.lock().unwrap();
+        command_history(&marks)
     }
 
     /// 마지막으로 완료된 명령의 출력 범위 [시작, 끝] (절대 줄 번호).
@@ -398,6 +434,7 @@ fn reader_loop(
     term: Arc<FairMutex<Term<EventProxy>>>,
     marks: Marks,
     cwd: Arc<Mutex<String>>,
+    name: Arc<Mutex<String>>,
     proxy: EventProxy,
     attached: bool,
 ) {
@@ -442,6 +479,11 @@ fn reader_loop(
                 if !sync {
                     proxy.send_event(Event::Wakeup);
                 }
+            }
+            Ok(MuxMsg::Focus) => proxy.send_focus(),
+            Ok(MuxMsg::Name(new_name)) => {
+                *name.lock().unwrap() = new_name;
+                proxy.send_renamed();
             }
             // 셸 종료
             Ok(MuxMsg::Exit) => break,
@@ -636,6 +678,7 @@ fn record_mark(term: &Term<EventProxy>, marks: &Marks, proxy: &EventProxy, paylo
         kind,
         abs_line,
         at: Instant::now(),
+        cmdline: osc::parse_cmdline(payload),
     });
 
     // D 마크면 소요 시간을 계산해 App으로 보낸다. 여기서(reader 스레드)
@@ -653,6 +696,19 @@ fn record_mark(term: &Term<EventProxy>, marks: &Marks, proxy: &EventProxy, paylo
     if *DEBUG.get_or_init(|| std::env::var_os("EDEN_DEBUG_MARKS").is_some()) {
         eprintln!("[mark] {kind:?} abs_line={abs_line}");
     }
+}
+
+/// C 마크의 명령줄을 최근 것부터 모은다. 같은 명령을 여러 번 실행했으면
+/// 가장 최근 위치 하나만 남긴다 — 셸 히스토리의 `HIST_IGNORE_ALL_DUPS`와 같다.
+fn command_history(marks: &[Mark]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    marks
+        .iter()
+        .rev()
+        .filter_map(|m| m.cmdline.as_deref())
+        .filter(|cmd| seen.insert(*cmd))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// 마지막 마크가 D(CommandEnd)일 때, 짝이 되는 직전 C(CommandStart)부터의
@@ -790,7 +846,29 @@ mod tests {
             kind,
             abs_line: 0,
             at: t0 + Duration::from_secs(secs),
+            cmdline: None,
         }
+    }
+
+    fn cmd_mark(cmd: Option<&str>) -> Mark {
+        Mark {
+            kind: MarkKind::CommandStart,
+            abs_line: 0,
+            at: Instant::now(),
+            cmdline: cmd.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn history_is_newest_first_without_duplicates() {
+        let marks = vec![
+            cmd_mark(Some("ls")),
+            cmd_mark(Some("make test")),
+            cmd_mark(None), // 셸 통합이 명령줄을 안 보낸 경우
+            cmd_mark(Some("ls")),
+            cmd_mark(Some("git status")),
+        ];
+        assert_eq!(command_history(&marks), ["git status", "ls", "make test"]);
     }
 
     #[test]

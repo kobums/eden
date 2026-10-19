@@ -144,6 +144,11 @@ eden send $id -r '\x03'       # Ctrl+C (raw 이스케이프: \n \r \t \e \xHH)
 eden send $id -n 'partial'    # Enter 없이
 eden wait $id --timeout 300   # 이미 돌고 있는 명령을 기다린다 (초과 시 124)
 eden kill $id
+
+eden new --name api           # 이름 붙여 생성 — 이후 <id> 자리에 이름을 쓴다
+eden send api 'make test' --wait
+eden rename api web           # 이름 바꾸기 ("" = 해제). 탭 제목도 이름으로 바뀐다
+eden focus web                # GUI에서 그 탭을 앞으로 (GUI가 꺼져 있으면 띄운다)
 ```
 
 - `send`는 기본으로 끝에 Enter(CR)를 붙인다 — 셸에도, Claude Code 같은 raw
@@ -202,6 +207,16 @@ printf '\e]777;notify;제목;본문\a'              # OSC 777 (rxvt)
 
 `notify = off`로 전부 끌 수 있다. detach 후 재접속할 때 과거 출력이 재생되면서
 옛 알림이 다시 울리는 일은 없다.
+
+## 명령 히스토리 (Cmd+R)
+
+이 세션에서 실행한 명령을 최근 것부터 보여준다. 같은 명령은 가장 최근 것
+하나만 남는다. 단어를 공백으로 나눠 입력하면 전부 들어간 명령만 남는다
+(`git lo` → `git log --oneline`).
+
+**Enter는 입력줄에 넣기만 하고 실행하지 않는다.** 고쳐서 다시 돌리는 경우가
+더 흔하고, 셸 통합이 명령줄을 512바이트에서 자르므로 긴 명령은 잘린 채로
+들어올 수 있기 때문이다. 셸 통합(OSC 133)이 켜져 있어야 기록된다.
 
 ## 커맨드 팔레트 (Cmd+Shift+P)
 

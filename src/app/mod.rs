@@ -366,12 +366,42 @@ impl App {
         if index < state.tabs.len() && index != state.active {
             state.active = index;
             self.preedit = None;
-            let title = state.focused_pane().title.clone();
+            let title = state.focused_pane().display_title();
             state.window.set_title(&title);
             state.window.request_redraw();
             // 활성 탭도 복원 대상이다 (재시작 시 같은 탭이 앞에 오도록).
             self.save_layout();
         }
+    }
+
+    /// `eden focus <id>` — 그 세션의 탭으로 전환하고 페인에 포커스를 준 뒤 창을
+    /// 앞으로 가져온다. 다른 페인이 줌돼 있으면 풀어야 대상이 보인다.
+    fn focus_pane_from_cli(&mut self, pane_id: usize) {
+        let Some(state) = &mut self.state else { return };
+        let Some(tab_index) = state
+            .tabs
+            .iter()
+            .position(|t| t.root.pane(pane_id).is_some())
+        else {
+            return; // 그 사이 페인이 닫혔다
+        };
+        let tab = &mut state.tabs[tab_index];
+        if tab.focused != pane_id {
+            if tab.zoomed {
+                tab.zoomed = false;
+                state.relayout_tab(tab_index);
+            }
+            state.tabs[tab_index].focused = pane_id;
+            self.preedit = None;
+        }
+        self.switch_tab(tab_index);
+        if self.quake_hidden {
+            self.toggle_quake(); // 숨김을 풀며 포커스까지 준다
+        }
+        let state = self.state.as_ref().unwrap();
+        state.window.set_minimized(false);
+        state.window.focus_window();
+        state.window.request_redraw();
     }
 
     /// 포커스된 페인을 탭 전체로 확대/복원한다 (tmux의 `prefix+z`).
@@ -504,13 +534,10 @@ impl App {
             .unwrap_or_default();
         let search_pane = self.search.as_ref().map(|s| s.pane_id);
         let search_current = self.search.as_ref().and_then(|s| s.current_index());
-        let palette_items: Option<(String, Vec<String>, usize)> = self.palette.as_ref().map(|p| {
-            let names = Self::palette_matches(&p.query)
-                .iter()
-                .map(|(name, _)| name.to_string())
-                .collect();
-            (p.query.clone(), names, p.selected)
-        });
+        let palette_items: Option<(String, Vec<String>, usize)> = self
+            .palette
+            .as_ref()
+            .map(|p| (format!("{} {}", p.prompt(), p.query), p.items(), p.selected));
 
         let state = self.state.as_mut().unwrap();
         // renderer(가변)와 tabs(불변)를 동시에 빌리기 위해 필드를 분리 차용한다.
@@ -576,7 +603,7 @@ impl App {
                 let title = t
                     .root
                     .pane(t.focused)
-                    .map(|p| p.title.clone())
+                    .map(|p| p.display_title())
                     .unwrap_or_else(|| "zsh".to_string());
                 // 줌 중에는 다른 페인이 사라진 것처럼 보이므로 표시가 필요하다.
                 // tmux가 윈도우 플래그에 Z를 붙이는 것과 같은 관례.
@@ -703,6 +730,16 @@ impl ApplicationHandler<AppEvent> for App {
                 title,
                 body,
             } => self.on_osc_notify(pane_id, title, body),
+            AppEvent::FocusPane { pane_id } => self.focus_pane_from_cli(pane_id),
+            AppEvent::Renamed { pane_id } => {
+                let state = self.state.as_ref().unwrap();
+                if state.focused_pane().id == pane_id {
+                    state
+                        .window
+                        .set_title(&state.focused_pane().display_title());
+                }
+                state.window.request_redraw(); // 탭 바
+            }
         }
     }
 
@@ -1007,7 +1044,9 @@ impl App {
                     pane.title = title.clone();
                 }
                 if tab_index == state.active && state.tabs[tab_index].focused == pane_id {
-                    state.window.set_title(&title);
+                    state
+                        .window
+                        .set_title(&state.focused_pane().display_title());
                 }
                 state.window.request_redraw();
             }

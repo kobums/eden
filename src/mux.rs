@@ -37,6 +37,8 @@ const PEEK: u8 = 0x08; // id u64 — 리플레이 버퍼 스냅샷 (리사이즈
 const LIST_INFO: u8 = 0x09; // (empty) — 세션 상세 목록
 const SPAWN: u8 = 0x0A; // cols u16, lines u16, px u16, py u16, cwd bytes — 붙지 않고 세션 생성
 const KILL_ID: u8 = 0x0B; // id u64 — 지정 세션 종료
+const RENAME: u8 = 0x0C; // id u64, name bytes — 세션 이름 지정 (빈 이름 = 해제)
+const FOCUS: u8 = 0x0D; // id u64 — 그 세션을 보여주는 GUI에 포커스 요청
 // 데몬 → 클라이언트
 const ATTACHED: u8 = 0x81; // id u64
 const OUTPUT: u8 = 0x82; // raw bytes
@@ -46,6 +48,15 @@ const OK: u8 = 0x86; // u8 — 1 성공 / 0 실패 (세션 없음 등)
 const REPLAY: u8 = 0x87; // cols u16, lines u16, raw bytes
 const SESSION_INFO: u8 = 0x88; // count u32, SessionInfo… (encode_info 참고)
 const CREATED: u8 = 0x89; // id u64
+// 데몬 → 구독자(GUI): 세션 스트림에 끼워 보내는 제어 프레임. 구버전 GUI의
+// `read_msg`는 모르는 프레임을 건너뛰므로 섞여 와도 안전하다.
+const FOCUS_REQ: u8 = 0x8A; // (empty) — 이 세션을 앞으로
+const NAME: u8 = 0x8B; // name bytes — 세션 이름 (붙을 때 + 바뀔 때)
+
+/// RENAME 응답 코드 (`OK` 프레임의 첫 바이트)
+pub const RENAME_OK: u8 = 1;
+pub const RENAME_NO_SESSION: u8 = 0;
+pub const RENAME_TAKEN: u8 = 2;
 
 /// mux 제어 소켓 경로.
 pub fn socket_path() -> PathBuf {
@@ -250,12 +261,15 @@ pub struct SessionInfo {
     /// 시작된 명령 수 / 끝난 명령 수 (`ShellState` 참고).
     pub commands: u64,
     pub completions: u64,
+    /// `eden rename`/`eden new --name`으로 붙인 이름. 없으면 빈 문자열.
+    pub name: String,
 }
 
 /// `SESSION_INFO` 페이로드 인코딩: `[u32 count]` 뒤에 세션마다
 /// `[u32 len][레코드 본문]`. 본문은 `id u64 · pid u32 · cols u16 · lines u16 ·
 /// running u8 · exit_present u8 · exit i32 · cwd (u16 len + bytes) ·
-/// command (u16 len + bytes) · commands u64 · completions u64`.
+/// command (u16 len + bytes) · commands u64 · completions u64 ·
+/// name (u16 len + bytes)`. `name`은 나중에 붙은 꼬리 필드라 없으면 빈 이름이다.
 ///
 /// 레코드에 길이가 붙어 있으므로 새 필드는 본문 꼬리에 붙이기만 하면 된다 —
 /// `decode_info`는 아는 필드까지 읽고 나머지는 길이만큼 건너뛰므로 구버전
@@ -279,6 +293,9 @@ fn encode_info(infos: &[SessionInfo]) -> Vec<u8> {
         }
         body.extend_from_slice(&info.commands.to_le_bytes());
         body.extend_from_slice(&info.completions.to_le_bytes());
+        let name = &info.name.as_bytes()[..info.name.len().min(u16::MAX as usize)];
+        body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        body.extend_from_slice(name);
         out.extend_from_slice(&(body.len() as u32).to_le_bytes());
         out.extend_from_slice(&body);
     }
@@ -317,6 +334,8 @@ fn decode_info(payload: &[u8]) -> Vec<SessionInfo> {
         let command = cur.string()?;
         let commands = u64::from_le_bytes(cur.take()?);
         let completions = u64::from_le_bytes(cur.take()?);
+        // 꼬리 필드: 이름을 모르는 구버전 데몬의 레코드에는 없다
+        let name = cur.string().unwrap_or_default();
         // 이 뒤에 남는 바이트는 우리가 모르는 신버전 필드 — 무시한다.
         Some(SessionInfo {
             id,
@@ -329,6 +348,7 @@ fn decode_info(payload: &[u8]) -> Vec<SessionInfo> {
             command,
             commands,
             completions,
+            name,
         })
     }
     let mut cur = Cursor(payload);
@@ -422,10 +442,29 @@ pub fn kill_id(id: u64) -> io::Result<bool> {
     ok_reply(request(KILL_ID, &id.to_le_bytes())?)
 }
 
-/// 데몬 읽기 스트림에서 Output/Exit 프레임을 꺼낸다.
+/// 세션 이름 지정. 응답은 `RENAME_OK` / `RENAME_NO_SESSION` / `RENAME_TAKEN`.
+pub fn rename(id: u64, name: &str) -> io::Result<u8> {
+    let mut payload = id.to_le_bytes().to_vec();
+    payload.extend_from_slice(name.as_bytes());
+    match request(RENAME, &payload)? {
+        (OK, payload) => Ok(payload.first().copied().unwrap_or(0)),
+        (tag, _) => Err(io::Error::other(format!("예상 밖 응답 0x{tag:02x}"))),
+    }
+}
+
+/// 그 세션을 보여주는 GUI에 포커스를 요청한다. 붙은 GUI가 없으면 Ok(false).
+pub fn focus(id: u64) -> io::Result<bool> {
+    ok_reply(request(FOCUS, &id.to_le_bytes())?)
+}
+
+/// 데몬 읽기 스트림에서 꺼낸 메시지.
 pub enum MuxMsg {
     Output(Vec<u8>),
     Exit,
+    /// `eden focus` — 이 세션을 앞으로
+    Focus,
+    /// 세션 이름 (빈 문자열 = 이름 없음)
+    Name(String),
 }
 
 pub fn read_msg(stream: &mut UnixStream) -> io::Result<MuxMsg> {
@@ -434,6 +473,8 @@ pub fn read_msg(stream: &mut UnixStream) -> io::Result<MuxMsg> {
         match tag {
             OUTPUT => return Ok(MuxMsg::Output(payload)),
             EXIT => return Ok(MuxMsg::Exit),
+            FOCUS_REQ => return Ok(MuxMsg::Focus),
+            NAME => return Ok(MuxMsg::Name(String::from_utf8_lossy(&payload).into_owned())),
             _ => continue, // 알 수 없는 프레임은 무시
         }
     }
@@ -476,6 +517,8 @@ pub fn ensure_daemon() -> io::Result<()> {
 enum Chunk {
     Data(Vec<u8>),
     Ended,
+    Focus,
+    Name(String),
 }
 
 /// 최대 리플레이 버퍼 크기 (초과 시 앞부분을 개행 경계에서 잘라낸다).
@@ -490,6 +533,9 @@ struct DaemonSession {
     size: WindowSize,
     /// 출력에서 도출한 셸 상태 (`eden list`·`eden wait`용).
     shell: ShellState,
+    /// 세션 이름 (`eden rename`). 데몬이 갖고 있어야 GUI를 닫았다 열어도,
+    /// CLI에서도 같은 이름으로 부를 수 있다.
+    name: String,
 }
 
 impl DaemonSession {
@@ -505,7 +551,18 @@ impl DaemonSession {
             command: self.shell.command.clone(),
             commands: self.shell.commands,
             completions: self.shell.completions,
+            name: self.name.clone(),
         }
+    }
+
+    /// 살아 있는 구독자(GUI)에게 제어 메시지를 보낸다. 받은 구독자가 있으면 true.
+    /// 끊긴 구독자의 정리는 리더 스레드 몫이라 여기서는 보내기만 한다.
+    fn notify(&self, chunk: Chunk) -> bool {
+        self.subscribers
+            .iter()
+            .filter(|tx| tx.send(chunk.clone()).is_ok())
+            .count()
+            > 0
     }
 
     fn hangup(&self) {
@@ -680,6 +737,43 @@ fn handle_connection(
                 }
             }
         }
+        RENAME => {
+            let Some(id) = session_id(&payload) else {
+                return;
+            };
+            let name = String::from_utf8_lossy(&payload[8..]).trim().to_string();
+            // LIST_INFO와 같이 레지스트리 잠금을 먼저 풀고 세션을 잠근다 — 둘을
+            // 겹쳐 쥐면 세션 정리 경로와 순서가 엇갈려 교착할 수 있다.
+            let sessions: Vec<(u64, Arc<Mutex<DaemonSession>>)> = registry
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, s)| (*id, Arc::clone(s)))
+                .collect();
+            let taken = !name.is_empty()
+                && sessions
+                    .iter()
+                    .any(|(other, s)| *other != id && s.lock().unwrap().name == name);
+            let code = match sessions.iter().find(|(other, _)| *other == id) {
+                None => RENAME_NO_SESSION,
+                Some(_) if taken => RENAME_TAKEN,
+                Some((_, session)) => {
+                    let mut s = session.lock().unwrap();
+                    s.name = name.clone();
+                    s.notify(Chunk::Name(name));
+                    RENAME_OK
+                }
+            };
+            let _ = write_frame(&mut stream, OK, &[code]);
+        }
+        FOCUS => {
+            let Some(id) = session_id(&payload) else {
+                return;
+            };
+            let session = registry.lock().unwrap().get(&id).map(Arc::clone);
+            let delivered = session.is_some_and(|s| s.lock().unwrap().notify(Chunk::Focus));
+            let _ = write_frame(&mut stream, OK, &[delivered as u8]);
+        }
         KILL_ID => {
             let Some(id) = session_id(&payload) else {
                 return;
@@ -749,6 +843,7 @@ fn spawn_session(
         subscribers: Vec::new(),
         size: ws,
         shell: ShellState::default(),
+        name: String::new(),
     }));
 
     let reader_session = Arc::clone(&session);
@@ -798,6 +893,9 @@ fn serve_subscriber(stream: UnixStream, id: u64, session: Arc<Mutex<DaemonSessio
         if !s.replay.is_empty() {
             let _ = tx.send(Chunk::Data(s.replay.clone()));
         }
+        if !s.name.is_empty() {
+            let _ = tx.send(Chunk::Name(s.name.clone()));
+        }
         s.subscribers.push(tx);
     }
 
@@ -819,6 +917,8 @@ fn serve_subscriber(stream: UnixStream, id: u64, session: Arc<Mutex<DaemonSessio
                     let _ = write_frame(&mut out_stream, EXIT, &[]);
                     false
                 }
+                Chunk::Focus => write_frame(&mut out_stream, FOCUS_REQ, &[]).is_ok(),
+                Chunk::Name(name) => write_frame(&mut out_stream, NAME, name.as_bytes()).is_ok(),
             };
             if !ok {
                 break; // 소켓 닫힘(detach) 또는 종료 → rx 드롭 → 리더가 구독 해제
@@ -917,6 +1017,7 @@ mod tests {
                 command: "cargo test -- --nocapture".into(),
                 commands: 12,
                 completions: 11,
+                name: "api".into(),
             },
             SessionInfo {
                 id: 7,
@@ -929,8 +1030,22 @@ mod tests {
                 command: String::new(),
                 commands: 0,
                 completions: 0,
+                name: String::new(),
             },
         ]
+    }
+
+    #[test]
+    fn record_without_name_from_an_old_daemon_decodes_with_empty_name() {
+        let mut info = sample().remove(1);
+        let mut bytes = encode_info(std::slice::from_ref(&info));
+        // 구버전 데몬은 name 필드(u16 길이 0)를 안 붙인다: 꼬리 2바이트를 떼고
+        // 레코드 길이(count 4바이트 뒤의 u32)를 맞춘다.
+        bytes.truncate(bytes.len() - 2);
+        let len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) - 2;
+        bytes[4..8].copy_from_slice(&len.to_le_bytes());
+        info.name = String::new();
+        assert_eq!(decode_info(&bytes), vec![info]);
     }
 
     #[test]

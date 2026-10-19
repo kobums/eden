@@ -31,7 +31,10 @@ eden — 세션 조작 CLI (GUI는 인자 없이 실행)
 
 사용법:
   eden list [--json]                       살아있는 세션 목록
-  eden new [--cwd DIR] [--json]            세션 생성 (붙지 않음; GUI가 다음 포커스 때 탭으로 붙인다)
+  eden new [--cwd DIR] [--name NAME] [--json]
+                                           세션 생성 (붙지 않음; GUI가 다음 포커스 때 탭으로 붙인다)
+  eden rename <id> <name>                  세션 이름 지정 (\"\" = 해제). 탭 제목에도 쓰인다
+  eden focus <id>                          GUI에서 그 세션의 탭을 앞으로 (GUI가 없으면 띄운다)
   eden send <id> [옵션] <텍스트>...        세션에 입력 (기본: 끝에 Enter)
       -n, --no-enter                       Enter를 붙이지 않는다
       -r, --raw                            \\n \\r \\t \\e \\xHH \\\\ 이스케이프를 해석한다
@@ -39,6 +42,8 @@ eden — 세션 조작 CLI (GUI는 인자 없이 실행)
   eden wait <id> [--timeout SECS]          실행 중인 명령이 끝날 때까지 기다린다 (종료 코드 반환)
   eden capture <id> [-s] [-n N]            화면 텍스트 출력 (-s: 스크롤백 포함, -n: 마지막 N줄)
   eden kill <id>                           세션 종료 (셸에 SIGHUP)
+
+<id> 자리에는 숫자 ID 대신 세션 이름을 써도 된다.
 
 종료 코드: 0 성공 · 1 오류 · 2 사용법 · 3 세션 없음 · 124 시간 초과
   (wait / send --wait 는 명령의 종료 코드를 그대로 돌려준다)
@@ -62,6 +67,8 @@ pub fn run(args: &[String]) -> Option<i32> {
         "wait" => cmd_wait(rest),
         "capture" => cmd_capture(rest),
         "kill" => cmd_kill(rest),
+        "rename" => cmd_rename(rest),
+        "focus" => cmd_focus(rest),
         _ => return None,
     };
     Some(code)
@@ -77,10 +84,38 @@ fn fail(err: impl std::fmt::Display) -> i32 {
     1
 }
 
+/// `<id>` 인자 해석 — 숫자면 ID, 아니면 세션 이름으로 찾는다.
 fn parse_id(s: Option<&String>) -> Result<u64, i32> {
-    match s.and_then(|s| s.parse().ok()) {
-        Some(id) => Ok(id),
-        None => Err(usage_error("세션 ID(숫자)가 필요합니다")),
+    let Some(s) = s else {
+        return Err(usage_error("세션 ID 또는 이름이 필요합니다"));
+    };
+    if let Ok(id) = s.parse() {
+        return Ok(id);
+    }
+    match list_or_empty() {
+        Ok(infos) => resolve_name(&infos, s).ok_or_else(|| {
+            eprintln!("eden: 이름이 {s}인 세션이 없습니다");
+            EXIT_NO_SESSION
+        }),
+        Err(e) => Err(fail(e)),
+    }
+}
+
+fn resolve_name(infos: &[SessionInfo], name: &str) -> Option<u64> {
+    infos.iter().find(|i| i.name == name).map(|i| i.id)
+}
+
+/// 세션 이름 규칙. 숫자만으로 된 이름은 ID와 헷갈리므로 막는다. 공백·제어
+/// 문자는 셸 인자로 다루기 번거롭고 탭 제목에서도 깨지므로 받지 않는다.
+fn validate_name(name: &str) -> Result<(), String> {
+    if name.chars().count() > 64 {
+        Err("이름은 64자 이하여야 합니다".into())
+    } else if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit()) {
+        Err("숫자만으로 된 이름은 ID와 헷갈려서 쓸 수 없습니다".into())
+    } else if name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        Err("이름에 공백이나 제어 문자를 쓸 수 없습니다".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -120,20 +155,34 @@ pub(crate) fn format_table(infos: &[SessionInfo], home: &str) -> String {
     if infos.is_empty() {
         return "세션 없음\n".to_string();
     }
-    let rows: Vec<[String; 6]> = infos
+    // 이름을 하나도 안 쓰면 NAME 열을 아예 빼서 예전 출력과 같게 둔다
+    let named = infos.iter().any(|i| !i.name.is_empty());
+    let rows: Vec<Vec<String>> = infos
         .iter()
         .map(|i| {
-            [
-                i.id.to_string(),
+            let mut row = vec![i.id.to_string()];
+            if named {
+                row.push(if i.name.is_empty() {
+                    "-".into()
+                } else {
+                    i.name.clone()
+                });
+            }
+            row.extend([
                 if i.running { "running" } else { "idle" }.to_string(),
                 i.last_exit.map_or("-".to_string(), |e| e.to_string()),
                 format!("{}x{}", i.cols, i.lines),
                 abbreviate_home(&i.cwd, home),
                 i.command.clone(),
-            ]
+            ]);
+            row
         })
         .collect();
-    let header = ["ID", "STATE", "EXIT", "SIZE", "CWD", "COMMAND"];
+    let mut header = vec!["ID"];
+    if named {
+        header.push("NAME");
+    }
+    header.extend(["STATE", "EXIT", "SIZE", "CWD", "COMMAND"]);
     let mut widths: Vec<usize> = header.iter().map(|h| h.len()).collect();
     for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row.iter()) {
@@ -192,6 +241,7 @@ fn info_json(i: &SessionInfo) -> serde_json::Value {
         "command": i.command,
         "commands": i.commands,
         "completions": i.completions,
+        "name": if i.name.is_empty() { None } else { Some(&i.name) },
     })
 }
 
@@ -199,11 +249,16 @@ fn info_json(i: &SessionInfo) -> serde_json::Value {
 
 fn cmd_new(args: &[String]) -> i32 {
     let mut cwd: Option<String> = None;
+    let mut name: Option<String> = None;
     let mut json = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => json = true,
+            "--name" => match it.next() {
+                Some(n) => name = Some(n.clone()),
+                None => return usage_error("--name 뒤에 이름이 필요합니다"),
+            },
             "--cwd" => match it.next() {
                 Some(dir) => cwd = Some(dir.clone()),
                 None => return usage_error("--cwd 뒤에 디렉터리가 필요합니다"),
@@ -234,8 +289,27 @@ fn cmd_new(args: &[String]) -> i32 {
         cell_width: 8,
         cell_height: 16,
     };
+    if let Some(name) = &name {
+        if let Err(msg) = validate_name(name) {
+            return usage_error(&msg);
+        }
+        match list_or_empty() {
+            Ok(infos) if resolve_name(&infos, name).is_some() => {
+                return fail(format!("이름 {name}은(는) 이미 다른 세션이 쓰고 있습니다"));
+            }
+            Ok(_) => {}
+            Err(e) => return fail(e),
+        }
+    }
     match mux::spawn(ws, dir.to_str()) {
         Ok(id) => {
+            // 위 확인과 이 사이에 같은 이름이 생겼으면(경합) 만든 세션을 거둔다
+            if let Some(name) = &name
+                && let Err(code) = apply_name(id, name)
+            {
+                let _ = mux::kill_id(id);
+                return code;
+            }
             if json {
                 println!("{{\"id\": {id}}}");
             } else {
@@ -524,6 +598,88 @@ impl Dimensions for Size {
     }
 }
 
+// ---------------------------------------------------------------- rename / focus
+
+fn apply_name(id: u64, name: &str) -> Result<(), i32> {
+    match mux::rename(id, name) {
+        Ok(mux::RENAME_OK) => Ok(()),
+        Ok(mux::RENAME_TAKEN) => Err(fail(format!(
+            "이름 {name}은(는) 이미 다른 세션이 쓰고 있습니다"
+        ))),
+        Ok(_) => Err(no_session(id)),
+        Err(e) => Err(fail(e)),
+    }
+}
+
+fn cmd_rename(args: &[String]) -> i32 {
+    let id = match parse_id(args.first()) {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    let [_, name] = args else {
+        return usage_error("rename <id> <name> — 이름을 지우려면 \"\"");
+    };
+    if let Err(msg) = validate_name(name) {
+        return usage_error(&msg);
+    }
+    match apply_name(id, name) {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
+}
+
+/// GUI가 그 세션을 보고 있으면 데몬을 거쳐 포커스 요청을 보낸다. 아무 GUI도
+/// 붙어 있지 않으면(`eden new`로만 만든 세션, 또는 GUI가 꺼져 있음) 앱을 띄운다 —
+/// 창이 포커스를 받을 때 고아 세션을 탭으로 붙이므로, 붙을 때까지 잠깐 재시도한다.
+fn cmd_focus(args: &[String]) -> i32 {
+    let id = match parse_id(args.first()) {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    match find_session(id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return no_session(id),
+        Err(e) => return fail(e),
+    }
+    match mux::focus(id) {
+        Ok(true) => return 0,
+        Ok(false) => {}
+        Err(e) => return fail(e),
+    }
+    if let Err(e) = launch_gui() {
+        return fail(format!("GUI를 띄우지 못했습니다: {e}"));
+    }
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(100));
+        if let Ok(true) = mux::focus(id) {
+            return 0;
+        }
+    }
+    fail("GUI가 5초 안에 세션에 붙지 않았습니다")
+}
+
+/// eden.app을 연다. CLI는 Homebrew가 `.app` 안의 바이너리를 링크한 것이므로
+/// 실행 파일 경로에서 번들을 찾는다. 번들 밖(`cargo run`)이면 이름으로 연다.
+fn launch_gui() -> io::Result<()> {
+    let bundle = std::env::current_exe()?
+        .canonicalize()?
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(std::path::Path::to_path_buf);
+    let mut open = std::process::Command::new("open");
+    match &bundle {
+        Some(app) => open.arg(app),
+        None => open.args(["-a", "eden"]),
+    };
+    let status = open.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("open 종료 코드 {status}")))
+    }
+}
+
 // ---------------------------------------------------------------- kill
 
 fn cmd_kill(args: &[String]) -> i32 {
@@ -554,7 +710,51 @@ mod tests {
             command: cmd.into(),
             commands: 0,
             completions: 0,
+            name: String::new(),
         }
+    }
+
+    fn named(id: u64, name: &str) -> SessionInfo {
+        SessionInfo {
+            name: name.into(),
+            ..info(id, false, Some(0), "/tmp", "")
+        }
+    }
+
+    #[test]
+    fn name_column_appears_only_when_some_session_is_named() {
+        let table = format_table(&[named(1, "api"), named(2, "")], "/Users/me");
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].starts_with("ID  NAME  STATE"), "{table}");
+        assert!(lines[1].starts_with("1   api   idle"), "{table}");
+        assert!(lines[2].starts_with("2   -     idle"), "{table}");
+    }
+
+    #[test]
+    fn names_resolve_to_ids() {
+        let infos = [named(1, "api"), named(7, "web")];
+        assert_eq!(resolve_name(&infos, "web"), Some(7));
+        assert_eq!(resolve_name(&infos, "db"), None);
+        assert_eq!(resolve_name(&infos, ""), None);
+    }
+
+    #[test]
+    fn name_rules() {
+        assert!(validate_name("api").is_ok());
+        assert!(validate_name("빌드-1").is_ok());
+        assert!(validate_name("").is_ok(), "빈 이름 = 해제");
+        assert!(validate_name("42").is_err(), "ID와 헷갈린다");
+        assert!(validate_name("my api").is_err());
+        assert!(validate_name("a\tb").is_err());
+        assert!(validate_name(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn json_name_is_null_when_unset() {
+        let v: serde_json::Value =
+            serde_json::from_str(&to_json(&[named(1, "api"), named(2, "")])).unwrap();
+        assert_eq!(v[0]["name"], "api");
+        assert!(v[1]["name"].is_null());
     }
 
     #[test]

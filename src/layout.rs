@@ -95,6 +95,20 @@ pub struct Pane {
     pub unseen_exit: Option<Option<i32>>,
 }
 
+impl Pane {
+    /// 탭에 보일 제목 — `eden rename`으로 붙인 세션 이름이 있으면 그것,
+    /// 없으면 셸이 OSC 0/2로 정한 제목. 이름은 사용자가 의도해서 붙인 것이라
+    /// 프로그램이 매번 바꾸는 OSC 제목보다 우선한다.
+    pub fn display_title(&self) -> String {
+        let name = self.session.name.lock().unwrap();
+        if name.is_empty() {
+            self.title.clone()
+        } else {
+            name.clone()
+        }
+    }
+}
+
 /// 분할 트리가 페이로드에서 요구하는 전부 — 식별자 하나.
 ///
 /// 트리를 `Pane`이 아니라 이 트레이트로 일반화한 이유는 테스트 때문이다.

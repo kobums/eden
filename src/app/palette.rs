@@ -27,12 +27,68 @@ const PALETTE_ACTIONS: &[(&str, Action)] = &[
     ("Increase Font Size", Action::FontSizeUp),
     ("Decrease Font Size", Action::FontSizeDown),
     ("Reset Font Size", Action::FontSizeReset),
+    ("Command History", Action::CommandHistory),
 ];
+
+/// 팔레트가 무엇을 고르는가.
+pub(super) enum PaletteKind {
+    /// 액션 실행 (Cmd+Shift+P)
+    Actions,
+    /// 이 세션의 명령 히스토리, 최근 것부터 (Cmd+R). Enter = 프롬프트에 넣기만.
+    History(Vec<String>),
+}
 
 /// 커맨드 팔레트 상태.
 pub(super) struct Palette {
     pub(super) query: String,
     pub(super) selected: usize,
+    pub(super) kind: PaletteKind,
+}
+
+impl Palette {
+    pub(super) fn new(kind: PaletteKind) -> Self {
+        Self {
+            query: String::new(),
+            selected: 0,
+            kind,
+        }
+    }
+
+    /// 화면에 그릴 항목 이름 (현재 쿼리로 필터).
+    pub(super) fn items(&self) -> Vec<String> {
+        match &self.kind {
+            PaletteKind::Actions => App::palette_matches(&self.query)
+                .iter()
+                .map(|(name, _)| name.to_string())
+                .collect(),
+            PaletteKind::History(commands) => history_matches(commands, &self.query)
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+
+    /// 쿼리 줄 앞에 붙는 표시 — 무엇을 고르는 중인지 구분한다.
+    pub(super) fn prompt(&self) -> &'static str {
+        match self.kind {
+            PaletteKind::Actions => ">",
+            PaletteKind::History(_) => "history>",
+        }
+    }
+}
+
+/// 히스토리 필터: 공백으로 나눈 단어가 모두 들어 있는 명령 (대소문자 무시).
+/// 순서는 원래 순서(최근 것부터)를 유지한다.
+fn history_matches<'a>(commands: &'a [String], query: &str) -> Vec<&'a str> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    commands
+        .iter()
+        .filter(|cmd| {
+            let cmd = cmd.to_lowercase();
+            words.iter().all(|w| cmd.contains(w.as_str()))
+        })
+        .map(String::as_str)
+        .collect()
 }
 
 impl App {
@@ -44,6 +100,18 @@ impl App {
             .filter(|(name, _)| q.is_empty() || name.to_lowercase().contains(&q))
             .copied()
             .collect()
+    }
+
+    /// Cmd+R — 포커스된 페인의 명령 히스토리 팔레트를 연다.
+    ///
+    /// 고른 명령은 **입력줄에 넣기만 하고 실행하지 않는다** (AI 명령과 같은 원칙).
+    /// 셸 통합이 명령줄을 512바이트에서 자르므로 그대로 실행하면 잘린 명령이
+    /// 돌 수 있고, 다시 실행하기 전에 고치고 싶은 경우가 더 흔하다.
+    fn open_command_history(&mut self) {
+        let state = self.state.as_ref().unwrap();
+        let commands = state.focused_pane().session.command_history();
+        self.palette = Some(Palette::new(PaletteKind::History(commands)));
+        state.window.request_redraw();
     }
 
     /// 액션 하나를 실행한다. 키바인딩과 팔레트가 함께 쓰는 유일한 실행 지점이다.
@@ -69,12 +137,10 @@ impl App {
             }
             Action::Search => self.toggle_search(),
             Action::Palette => {
-                self.palette = Some(Palette {
-                    query: String::new(),
-                    selected: 0,
-                });
+                self.palette = Some(Palette::new(PaletteKind::Actions));
                 self.state.as_ref().unwrap().window.request_redraw();
             }
+            Action::CommandHistory => self.open_command_history(),
             Action::JumpPrevPrompt => self.jump_to_prompt(-1),
             Action::JumpNextPrompt => self.jump_to_prompt(1),
             Action::Copy => self.copy_selection(),
@@ -126,9 +192,18 @@ impl App {
             Key::Named(NamedKey::Escape) => self.palette = None,
             Key::Named(NamedKey::Enter) => {
                 let p = self.palette.take().unwrap();
-                let matches = Self::palette_matches(&p.query);
-                if let Some((_, action)) = matches.get(p.selected).copied() {
-                    self.run_action(action, event_loop);
+                match &p.kind {
+                    PaletteKind::Actions => {
+                        let matches = Self::palette_matches(&p.query);
+                        if let Some((_, action)) = matches.get(p.selected).copied() {
+                            self.run_action(action, event_loop);
+                        }
+                    }
+                    PaletteKind::History(commands) => {
+                        if let Some(cmd) = history_matches(commands, &p.query).get(p.selected) {
+                            self.insert_command(cmd);
+                        }
+                    }
                 }
             }
             Key::Named(NamedKey::ArrowDown) => self.move_palette_selection(1),
@@ -153,9 +228,44 @@ impl App {
     /// 팔레트 선택을 위/아래로 순환 이동.
     fn move_palette_selection(&mut self, delta: isize) {
         let Some(p) = &mut self.palette else { return };
-        let n = Self::palette_matches(&p.query).len();
+        let n = p.items().len();
         if n > 0 {
             p.selected = (p.selected as isize + delta).rem_euclid(n as isize) as usize;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmds() -> Vec<String> {
+        [
+            "git push",
+            "cargo test --locked",
+            "git status",
+            "Cargo build",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    #[test]
+    fn empty_query_keeps_all_in_order() {
+        assert_eq!(history_matches(&cmds(), ""), cmds());
+    }
+
+    #[test]
+    fn every_word_must_match_case_insensitively() {
+        assert_eq!(history_matches(&cmds(), "git"), ["git push", "git status"]);
+        assert_eq!(
+            history_matches(&cmds(), "CARGO"),
+            ["cargo test --locked", "Cargo build"]
+        );
+        assert_eq!(
+            history_matches(&cmds(), "cargo lock"),
+            ["cargo test --locked"]
+        );
+        assert!(history_matches(&cmds(), "npm").is_empty());
     }
 }

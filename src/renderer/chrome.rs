@@ -275,7 +275,7 @@ impl Renderer {
 
         // 쿼리 줄
         self.draw_text(
-            &format!("> {query}_"),
+            &format!("{query}_"),
             text_x,
             box_y + row_h * 0.25,
             max_x,

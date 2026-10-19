@@ -41,6 +41,8 @@ pub(super) enum Action {
     FontSizeDown,
     /// 폰트 크기를 설정 파일 값으로 되돌린다 (Cmd+0).
     FontSizeReset,
+    /// 이 세션에서 실행한 명령을 팔레트로 골라 프롬프트에 넣는다 (Cmd+R).
+    CommandHistory,
     /// 1-based 탭 번호로 전환 (Cmd+1..9).
     SelectTab(usize),
 }
@@ -72,6 +74,7 @@ const ACTION_NAMES: &[(&str, Action)] = &[
     ("font-size-up", Action::FontSizeUp),
     ("font-size-down", Action::FontSizeDown),
     ("font-size-reset", Action::FontSizeReset),
+    ("command-history", Action::CommandHistory),
 ];
 
 impl Action {
@@ -119,6 +122,7 @@ const DEFAULTS: &[(KeyCode, Option<bool>, bool, Action)] = &[
     (KeyCode::KeyC,         Some(true),  false, Action::CopyLastOutput),
     (KeyCode::KeyC,         Some(false), false, Action::Copy),
     (KeyCode::KeyV,         Some(false), false, Action::Paste),
+    (KeyCode::KeyR,         Some(false), false, Action::CommandHistory),
     (KeyCode::ArrowUp,      None,        false, Action::JumpPrevPrompt),
     (KeyCode::ArrowDown,    None,        false, Action::JumpNextPrompt),
     // Cmd+Option+화살표: 페인 포커스 이동
