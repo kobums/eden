@@ -171,6 +171,7 @@ Phase 13 이후의 후속 작업 (릴리스 단위 — design.md의 Phase 14·15
 | v0.1.5 | 한글 IME 조합 중 Cmd 단축키 수정 + 물리 키(KeyCode) 매칭 전환 |
 | v0.2.0 | Phase 16~20: 평문 URL 감지, 명령 완료 알림 + OSC 9/777, 거터 색·키바인딩 설정, 분할 레이아웃 복원, Kitty keyboard protocol(기본 off) |
 | v0.2.1 | Phase 21: 폰트 크기 단축키, `SUN_LEN` 패닉 수정, 파일 드롭 경로 붙여넣기, 비활성 페인 디밍, 라이트/다크 자동 전환 |
+| v0.3.0 | Phase 22~24: `eden` CLI(list/new/send/wait/capture/kill/focus) + 탭 상태 점, 명령 히스토리 팔레트·세션 이름, AI 에러 설명(스트리밍)·링크 힌트 모드·설정 핫 리로드, 패닉 로그, AI 모델·백엔드 설정 |
 
 ## 남은 작업
 
