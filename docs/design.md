@@ -467,8 +467,7 @@ F. 성능·품질 (내부)
 - 스크롤백 상한(10k) 초과 시 블록 마크 오차 보정 (Phase 3의 남은 것)
 - ~~`HOME`이 길면 mux 소켓 경로가 `SUN_LEN`을 넘어 `Session::new`가 패닉~~ —
   **Phase 21 완료** (`/tmp` 폴백 경로)
-- 패닉 로그 파일 (`~/.cache/eden/panic.log` 수준) — Phase 17에서 "번들 밖
-  실행에서만 죽는" 버그가 수동 검증에서만 잡혔던 만큼 값싸고 회수가 큼
+- ~~패닉 로그 파일 (`~/.cache/eden/panic.log`)~~ — **완료** (`src/panic_log.rs`, GUI·데몬·CLI 공통 훅)
 - 인앱 업데이트 확인 — 실행 시 GitHub 릴리스 태그 비교 → 상태바에
   "새 버전" 표시 (brew가 있으므로 알림만, Sparkle 불필요)
 - 접근성 — VoiceOver에 화면 텍스트 노출. macOS 네이티브를 표방한다면

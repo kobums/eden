@@ -280,3 +280,10 @@ SF Mono 순으로 자동 선택되고, 파워라인 글리프·한글·기호는
 iTerm2를 쓰던 사람은 iTerm2의 프로파일 색을 그대로 옮길 수 있다 —
 `Custom Color Presets`의 16색 값을 `palette-0`~`palette-15`로, 배경/전경/커서를
 각 키로 넣으면 된다. `guezwhoz` 프리셋은 iTerm2 Guezwhoz 스킴을 내장한 예다.
+
+## 패닉 로그
+
+eden이 패닉으로 죽으면 `~/.cache/eden/panic.log`에 시각·버전·역할(gui/daemon/cli)·
+pid·스레드·메시지·백트레이스가 남는다. `.app`으로 실행하면 stderr가 어디에도
+남지 않아 "창이 그냥 사라졌다"만 보이기 때문이다. 1MB를 넘으면 `panic.log.1`로
+한 번 돌린다. 버그를 제보할 때 이 파일을 함께 붙이면 된다.

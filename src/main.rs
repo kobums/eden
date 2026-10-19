@@ -16,6 +16,7 @@ mod config;
 mod layout;
 mod mux;
 mod osc;
+mod panic_log;
 mod renderer;
 mod session;
 
@@ -50,10 +51,13 @@ pub(crate) fn set_dock_icon() {
 fn main() {
     // `--daemon`: mux 데몬으로 실행 (세션/PTY 소유, GUI와 독립적으로 생존)
     if std::env::args().any(|a| a == "--daemon") {
+        panic_log::install("daemon");
         mux::run_daemon();
     }
     // `eden list` 같은 서브커맨드: GUI 없이 데몬에 묻고 끝낸다.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let is_cli = args.first().is_some_and(|a| !a.starts_with('-'));
+    panic_log::install(if is_cli { "cli" } else { "gui" });
     if let Some(code) = cli::run(&args) {
         std::process::exit(code);
     }
