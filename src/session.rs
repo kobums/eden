@@ -55,6 +55,16 @@ pub enum AppEvent {
     Renamed {
         pane_id: usize,
     },
+    /// AI 에러 설명 스트림의 텍스트 조각 (Cmd+Shift+K).
+    AiExplainDelta {
+        seq: u64,
+        text: String,
+    },
+    /// AI 에러 설명 스트림 끝. `error`가 None이면 정상 종료.
+    AiExplainDone {
+        seq: u64,
+        error: Option<String>,
+    },
     /// Quake 드롭다운 토글 (전역 핫키)
     QuakeToggle,
     /// 상태바 갱신용 주기적 틱 (~1초)
@@ -347,6 +357,12 @@ impl Session {
     pub fn is_running(&self) -> bool {
         let marks = self.marks.lock().unwrap();
         matches!(marks.last().map(|m| m.kind), Some(MarkKind::CommandStart))
+    }
+
+    /// 마지막으로 **실패한**(종료 코드 ≠ 0) 명령. AI 에러 설명용.
+    pub fn last_failure(&self) -> Option<Failure> {
+        let marks = self.marks.lock().unwrap();
+        last_failure(&marks)
     }
 
     /// 이 세션에서 실행한 명령줄, 최근 것부터 (중복은 가장 최근 하나만).
@@ -698,6 +714,42 @@ fn record_mark(term: &Term<EventProxy>, marks: &Marks, proxy: &EventProxy, paylo
     }
 }
 
+/// 실패한 명령 하나 — 명령줄과 출력 범위(절대 줄 번호, 양 끝 포함).
+#[derive(Debug, PartialEq)]
+pub struct Failure {
+    pub command: Option<String>,
+    pub exit: Option<i32>,
+    pub output_start: i64,
+    pub output_end: i64,
+}
+
+/// 마크를 앞에서부터 C→D 쌍으로 묶어 마지막 실패를 찾는다. D 마크의 줄은 다음
+/// 프롬프트가 그려질 줄이라 출력 끝은 그 바로 앞 줄이다. 종료 코드를 모르는 D
+/// (`D` 단독)는 실패로 보지 않는다 — 실패인지 알 수 없다.
+fn last_failure(marks: &[Mark]) -> Option<Failure> {
+    let mut open: Option<&Mark> = None;
+    let mut found = None;
+    for mark in marks {
+        match mark.kind {
+            MarkKind::CommandStart => open = Some(mark),
+            MarkKind::CommandEnd(exit) => {
+                if let (Some(start), Some(code)) = (open.take(), exit)
+                    && code != 0
+                {
+                    found = Some(Failure {
+                        command: start.cmdline.clone(),
+                        exit,
+                        output_start: start.abs_line,
+                        output_end: (mark.abs_line - 1).max(start.abs_line),
+                    });
+                }
+            }
+            MarkKind::PromptStart => open = None,
+        }
+    }
+    found
+}
+
 /// C 마크의 명령줄을 최근 것부터 모은다. 같은 명령을 여러 번 실행했으면
 /// 가장 최근 위치 하나만 남긴다 — 셸 히스토리의 `HIST_IGNORE_ALL_DUPS`와 같다.
 fn command_history(marks: &[Mark]) -> Vec<String> {
@@ -857,6 +909,55 @@ mod tests {
             at: Instant::now(),
             cmdline: cmd.map(str::to_owned),
         }
+    }
+
+    fn mark(kind: MarkKind, line: i64, cmd: Option<&str>) -> Mark {
+        Mark {
+            kind,
+            abs_line: line,
+            at: Instant::now(),
+            cmdline: cmd.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn last_failure_is_the_latest_nonzero_exit() {
+        use MarkKind::*;
+        let marks = vec![
+            mark(PromptStart, 0, None),
+            mark(CommandStart, 0, Some("make")),
+            mark(CommandEnd(Some(2)), 5, None),
+            mark(PromptStart, 5, None),
+            mark(CommandStart, 5, Some("ls")),
+            mark(CommandEnd(Some(0)), 7, None),
+            mark(PromptStart, 7, None),
+        ];
+        assert_eq!(
+            last_failure(&marks),
+            Some(Failure {
+                command: Some("make".into()),
+                exit: Some(2),
+                output_start: 0,
+                output_end: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn no_failure_when_all_succeed_or_exit_is_unknown() {
+        use MarkKind::*;
+        let ok = vec![
+            mark(CommandStart, 0, Some("ls")),
+            mark(CommandEnd(Some(0)), 3, None),
+        ];
+        assert_eq!(last_failure(&ok), None);
+        let unknown = vec![mark(CommandStart, 0, None), mark(CommandEnd(None), 3, None)];
+        assert_eq!(last_failure(&unknown), None);
+        // 아직 실행 중 (D 없음)
+        assert_eq!(
+            last_failure(&[mark(CommandStart, 0, Some("sleep 9"))]),
+            None
+        );
     }
 
     #[test]

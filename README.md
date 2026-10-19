@@ -18,6 +18,9 @@
 - **CLI · 에이전트 오케스트레이션** — `eden list / new / send --wait / capture / kill`로 스크립트·AI 에이전트가 세션을 조작 (tmux `send-keys` 대응). 탭 바에 실행 중·완료 상태 점
 - **세션 이름 · 포커스** — `eden new --name api`·`eden rename`으로 세션에 이름을 붙이면 CLI 어디서나 ID 대신 이름을 쓰고, 탭 제목도 이름이 된다. `eden focus api`는 GUI에서 그 탭을 앞으로 가져온다 (GUI가 꺼져 있으면 띄운다)
 - **명령 히스토리** — Cmd+R로 이 세션에서 실행한 명령을 검색해 입력줄에 넣는다 (실행은 하지 않는다)
+- **AI 에러 설명** — 명령이 실패하면 Cmd+Shift+K로 원인과 고치는 명령을 스트리밍으로 받는다 (FIX 명령은 Enter로 입력줄에 넣기만)
+- **링크 힌트** — Cmd+Shift+O로 보이는 URL마다 라벨을 띄우고 라벨을 쳐서 연다 (kitty hints 방식, 한글 입력 상태에서도 동작)
+- **설정 핫 리로드** — 설정 파일을 저장하면 1초 안에 테마·색·키바인딩·폰트 크기가 바뀐다
 - **검색** — Cmd+F로 스크롤백 정규식 검색 (smart case, 매치 하이라이트, `3/17` 카운터)
 - **마우스 지원** — vim·htop·lazygit 등에 클릭·드래그·휠 전달 (Shift+드래그는 로컬 선택)
 - **하이퍼링크** — OSC 8 링크에 밑줄 + Cmd+클릭으로 열기
@@ -78,6 +81,8 @@ scrollback = 10000
 | Cmd+K | AI 명령 생성 |
 | Cmd+Shift+P | 커맨드 팔레트 |
 | Cmd+R | 명령 히스토리 (고른 명령을 입력줄에 넣기만 함) |
+| Cmd+Shift+K | 마지막 실패 명령 AI 설명 |
+| Cmd+Shift+O | 링크 힌트 (키보드로 URL 열기) |
 | Ctrl+` | Quake 드롭다운 토글 (전역 핫키) |
 
 전체 목록은 [docs/keybindings.md](docs/keybindings.md).
@@ -90,6 +95,10 @@ Cmd+K 후 자연어(한/영)를 입력하고 Enter. 우선순위:
 2. 없으면 로컬 [Ollama](https://ollama.com) (`EDEN_OLLAMA_URL`, 기본 `http://localhost:11434`)
 
 생성된 명령은 **실행되지 않고** 프롬프트에 삽입만 됩니다. 실행 여부는 사용자가 결정.
+
+명령이 실패했을 때 **Cmd+Shift+K**를 누르면 같은 라우팅으로 실패 원인을 설명받습니다.
+설명은 스트리밍으로 흘러나오고, 끝의 `FIX:` 명령은 Enter로 입력줄에 넣을 수 있습니다.
+Anthropic API는 `claude-opus-5-5`를 씁니다.
 
 ## CLI (스크립트 · AI 에이전트)
 

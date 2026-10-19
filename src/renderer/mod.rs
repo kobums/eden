@@ -41,6 +41,20 @@ pub struct DrawParams<'a> {
     pub palette: Option<(&'a str, &'a [String], usize)>,
     /// 하단 상태바: (왼쪽, 오른쪽).
     pub status: Option<(&'a str, &'a str)>,
+    /// 키보드 힌트 라벨 (Cmd+Shift+O). 화면 픽셀 좌표.
+    pub hints: &'a [HintBadge],
+    /// 여러 줄 패널: (제목, 본문, 하단 안내) — AI 에러 설명 (Cmd+Shift+K).
+    pub panel: Option<(&'a str, &'a str, &'a str)>,
+}
+
+/// 힌트 모드에서 링크 위에 띄우는 라벨 하나.
+pub struct HintBadge {
+    /// 라벨 왼쪽 위 (물리 픽셀)
+    pub x: f32,
+    pub y: f32,
+    pub label: String,
+    /// 이미 입력한 접두 글자 수 — 그만큼은 흐리게 그린다
+    pub typed: usize,
 }
 
 /// 탭 바의 탭 하나.
@@ -555,6 +569,8 @@ impl Renderer {
             search,
             palette,
             status,
+            hints,
+            panel,
         } = params;
 
         let mut bg_instances: Vec<BgInstance> = Vec::new();
@@ -594,6 +610,12 @@ impl Renderer {
                 &mut bg_instances,
                 &mut text_instances,
             );
+        }
+        if !hints.is_empty() {
+            self.draw_hints(hints, &mut bg_instances, &mut text_instances);
+        }
+        if let Some((title, body, footer)) = panel {
+            self.draw_panel(title, body, footer, &mut bg_instances, &mut text_instances);
         }
         self.submit(&bg_instances, &text_instances);
         ime_pos

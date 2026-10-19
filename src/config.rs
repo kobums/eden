@@ -349,6 +349,12 @@ const GUEZWHOZ: Preset = Preset {
     ],
 };
 
+/// 설정 파일의 마지막 수정 시각. 파일이 없으면 None — 핫 리로드는 이 값이
+/// 바뀌는 것(생성·수정·삭제 모두)을 보고 다시 읽는다.
+pub fn modified() -> Option<std::time::SystemTime> {
+    std::fs::metadata(config_path()?).ok()?.modified().ok()
+}
+
 fn config_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(PathBuf::from(home).join(".config/eden/config"))

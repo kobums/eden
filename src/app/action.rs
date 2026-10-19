@@ -43,6 +43,10 @@ pub(super) enum Action {
     FontSizeReset,
     /// 이 세션에서 실행한 명령을 팔레트로 골라 프롬프트에 넣는다 (Cmd+R).
     CommandHistory,
+    /// 마지막 실패 명령을 AI가 설명한다 (Cmd+Shift+K).
+    AiExplain,
+    /// 보이는 링크에 라벨을 띄워 키보드로 연다 (Cmd+Shift+O).
+    OpenHints,
     /// 1-based 탭 번호로 전환 (Cmd+1..9).
     SelectTab(usize),
 }
@@ -75,6 +79,8 @@ const ACTION_NAMES: &[(&str, Action)] = &[
     ("font-size-down", Action::FontSizeDown),
     ("font-size-reset", Action::FontSizeReset),
     ("command-history", Action::CommandHistory),
+    ("ai-explain", Action::AiExplain),
+    ("open-hints", Action::OpenHints),
 ];
 
 impl Action {
@@ -111,6 +117,8 @@ const DEFAULTS: &[(KeyCode, Option<bool>, bool, Action)] = &[
     // (키, Shift, Option, 액션)
     (KeyCode::KeyP,         Some(true),  false, Action::Palette),
     (KeyCode::KeyK,         Some(false), false, Action::AiGenerate),
+    (KeyCode::KeyK,         Some(true),  false, Action::AiExplain),
+    (KeyCode::KeyO,         Some(true),  false, Action::OpenHints),
     (KeyCode::KeyF,         None,        false, Action::Search),
     (KeyCode::KeyT,         Some(false), false, Action::NewTab),
     (KeyCode::KeyW,         Some(false), false, Action::ClosePane),

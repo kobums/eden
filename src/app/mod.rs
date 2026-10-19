@@ -16,6 +16,8 @@
 mod action;
 mod ai_bar;
 mod clipboard;
+mod explain;
+mod hints;
 mod input;
 mod kitty_key;
 mod layout_persist;
@@ -151,6 +153,12 @@ pub struct App {
     /// 취소된 요청의 늦은 응답을 무시하기 위한 시퀀스 번호
     ai_seq: u64,
     palette: Option<Palette>,
+    /// 키보드 힌트 모드 (Cmd+Shift+O). None이면 닫힌 것.
+    hints: Option<hints::Hints>,
+    /// AI 에러 설명 패널 (Cmd+Shift+K). None이면 닫힌 것.
+    explain: Option<explain::Explain>,
+    /// 취소·재요청된 설명 스트림의 늦은 조각을 버리기 위한 시퀀스 번호
+    explain_seq: u64,
     /// 스크롤백 검색 상태 (Cmd+F). None이면 닫힌 것.
     search: Option<search::Search>,
     /// Cmd 조합 → 액션 조회 표 (기본표 + 설정의 `keybind` 재정의).
@@ -164,6 +172,8 @@ pub struct App {
     window_focused: bool,
     /// 상태바용 시스템 지표 (틱마다 갱신)
     sys: sysinfo::System,
+    /// 설정 파일의 마지막 수정 시각 — 틱마다 비교해 바뀌면 다시 읽는다 (핫 리로드).
+    config_mtime: Option<std::time::SystemTime>,
     /// 데몬 boot id (시작 시각). layout.json에 함께 저장해, 데몬이 재시작해
     /// 세션 ID가 재발급됐을 때 옛 파일이 오매칭되는 것을 막는다.
     /// 구버전 데몬(boot id 미지원)이면 None.
@@ -203,6 +213,9 @@ impl App {
             ai: AiState::Idle,
             ai_seq: 0,
             palette: None,
+            hints: None,
+            explain: None,
+            explain_seq: 0,
             search: None,
             keymap,
             _hotkey: None,
@@ -212,6 +225,7 @@ impl App {
             window_focused: true,
             sys: sysinfo::System::new(),
             daemon_boot: None,
+            config_mtime: config::modified(),
             mouse_pos: PhysicalPosition::new(0.0, 0.0),
             left_button_down: false,
             last_click_at: None,
@@ -464,15 +478,45 @@ impl App {
     /// (`theme-light`/`theme-dark` 줄이 갈린다) 테마를 즉시 갈아탄다.
     /// 두 키가 없는 설정이면 같은 값이 다시 읽힐 뿐이라 무해하다.
     fn on_theme_changed(&mut self, theme: winit::window::Theme) {
+        self.reload_config(theme);
+    }
+
+    /// 설정 파일이 바뀌었으면 다시 읽는다 (1초 틱마다 — stat 한 번이라 값싸다).
+    ///
+    /// 테마·색·키바인딩·거터 색·폰트 크기는 바로 반영된다. 이미 열린 세션의
+    /// `scrollback`·`kitty-keyboard`는 Term을 만들 때만 쓰이므로 새 탭부터 적용된다.
+    fn reload_config_if_changed(&mut self) {
+        let mtime = config::modified();
+        if mtime == self.config_mtime {
+            return;
+        }
+        self.config_mtime = mtime;
+        let theme = self
+            .state
+            .as_ref()
+            .and_then(|s| s.window.theme())
+            .unwrap_or(winit::window::Theme::Dark);
+        self.reload_config(theme);
+    }
+
+    /// 설정 파일을 현재 외양 기준으로 다시 읽어 적용한다. 라이트/다크 전환과
+    /// 파일 변경(핫 리로드)이 같은 경로를 쓴다.
+    fn reload_config(&mut self, theme: winit::window::Theme) {
         let appearance = match theme {
             winit::window::Theme::Light => config::Appearance::Light,
             _ => config::Appearance::Dark,
         };
+        let old_font_size = self.config.font_size;
         self.config = config::Config::load_for(appearance);
         self.keymap = action::Keymap::from_config(&self.config.keybinds);
         let state = self.state.as_mut().unwrap();
         state.renderer.set_theme(&self.config);
         state.window.request_redraw();
+        // 설정의 font-size가 실제로 바뀐 때만 따른다 — Cmd+=로 키운 크기를
+        // 테마 전환이나 다른 줄의 수정이 되돌려 버리면 안 된다.
+        if (self.config.font_size - old_font_size).abs() > f32::EPSILON {
+            self.set_font_size(self.config.font_size);
+        }
     }
 
     /// 폰트 크기를 `delta`(pt)만큼 조절한다 (Cmd+= / Cmd+-).
@@ -538,6 +582,7 @@ impl App {
             .palette
             .as_ref()
             .map(|p| (format!("{} {}", p.prompt(), p.query), p.items(), p.selected));
+        let panel = self.explain.as_ref().map(|e| e.panel());
 
         let state = self.state.as_mut().unwrap();
         // renderer(가변)와 tabs(불변)를 동시에 빌리기 위해 필드를 분리 차용한다.
@@ -628,6 +673,22 @@ impl App {
         let palette_arg = palette_items
             .as_ref()
             .map(|(query, names, selected)| (query.as_str(), names.as_slice(), *selected));
+        // 힌트 라벨은 대상 페인이 지금 보이는 탭에 있을 때만 그린다
+        let hint_badges: Vec<renderer::HintBadge> = self
+            .hints
+            .as_ref()
+            .and_then(|h| {
+                let rect = rects.iter().find(|(id, _)| *id == h.pane_id)?.1;
+                let pane = tab.root.pane(h.pane_id)?;
+                Some(Self::hint_badges(
+                    h,
+                    pane,
+                    rect,
+                    renderer.cell_width,
+                    renderer.cell_height,
+                ))
+            })
+            .unwrap_or_default();
 
         let ime_pos = renderer.draw(renderer::DrawParams {
             panes: &views,
@@ -640,6 +701,10 @@ impl App {
                 .map(|(line, status)| (line.as_str(), status.as_str())),
             palette: palette_arg,
             status: Some((status.0.as_str(), status.1.as_str())),
+            hints: &hint_badges,
+            panel: panel
+                .as_ref()
+                .map(|(title, body, footer)| (title.as_str(), body.as_str(), footer.as_str())),
         });
         drop(views);
 
@@ -711,6 +776,7 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Tick => {
                 self.sys.refresh_cpu_usage();
                 self.sys.refresh_memory();
+                self.reload_config_if_changed();
                 self.state.as_ref().unwrap().window.request_redraw();
             }
             AppEvent::AiResult {
@@ -731,6 +797,8 @@ impl ApplicationHandler<AppEvent> for App {
                 body,
             } => self.on_osc_notify(pane_id, title, body),
             AppEvent::FocusPane { pane_id } => self.focus_pane_from_cli(pane_id),
+            AppEvent::AiExplainDelta { seq, text } => self.on_explain_delta(seq, text),
+            AppEvent::AiExplainDone { seq, error } => self.on_explain_done(seq, error),
             AppEvent::Renamed { pane_id } => {
                 let state = self.state.as_ref().unwrap();
                 if state.focused_pane().id == pane_id {

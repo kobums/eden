@@ -125,7 +125,7 @@ impl App {
 }
 
 /// 문자열이 `max` 바이트를 넘으면 뒷부분만 남긴다 (char 경계 유지).
-fn truncate_tail(text: String, max: usize) -> String {
+pub(super) fn truncate_tail(text: String, max: usize) -> String {
     if text.len() <= max {
         return text;
     }

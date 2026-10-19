@@ -28,6 +28,8 @@ const PALETTE_ACTIONS: &[(&str, Action)] = &[
     ("Decrease Font Size", Action::FontSizeDown),
     ("Reset Font Size", Action::FontSizeReset),
     ("Command History", Action::CommandHistory),
+    ("AI: Explain Last Failure", Action::AiExplain),
+    ("Open Link Hints", Action::OpenHints),
 ];
 
 /// 팔레트가 무엇을 고르는가.
@@ -141,6 +143,8 @@ impl App {
                 self.state.as_ref().unwrap().window.request_redraw();
             }
             Action::CommandHistory => self.open_command_history(),
+            Action::AiExplain => self.explain_last_failure(),
+            Action::OpenHints => self.open_hints(),
             Action::JumpPrevPrompt => self.jump_to_prompt(-1),
             Action::JumpNextPrompt => self.jump_to_prompt(1),
             Action::Copy => self.copy_selection(),

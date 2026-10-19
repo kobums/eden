@@ -30,7 +30,10 @@ impl App {
         // Cmd/Ctrl 조합은 단축키이므로 오버레이에 글자로 넣지 않는다.
         let typing = !mods.control_key() && !mods.super_key();
 
-        // 오버레이가 열려 있으면 키를 가로챈다.
+        // 오버레이가 열려 있으면 키를 가로챈다. 힌트·AI 설명은 모달이라 맨 먼저.
+        if self.hints_key(&event) || self.explain_key(&event.logical_key) {
+            return;
+        }
         if self.palette_key(
             &event.logical_key,
             event.text.as_deref(),
@@ -68,7 +71,12 @@ impl App {
         if self.preedit.is_some() {
             return;
         }
-        if self.palette.is_some() || !matches!(self.ai, AiState::Idle) || self.search.is_some() {
+        if self.palette.is_some()
+            || !matches!(self.ai, AiState::Idle)
+            || self.search.is_some()
+            || self.hints.is_some()
+            || self.explain.is_some()
+        {
             return;
         }
         let mods = self.modifiers.state();

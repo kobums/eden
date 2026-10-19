@@ -1,7 +1,7 @@
 //! UI 크롬: 탭 바, 하단 상태바, AI 입력 바, 커맨드 팔레트 오버레이.
 
 use super::text::FontSize;
-use super::{BgInstance, Renderer, TabLabel, TabStatus, TextInstance};
+use super::{BgInstance, HintBadge, Renderer, TabLabel, TabStatus, TextInstance};
 
 /// AI 입력 바 배경색.
 const AI_BAR_BG: [f32; 3] = [0.1, 0.14, 0.24];
@@ -11,6 +11,12 @@ const SEARCH_BAR_BG: [f32; 3] = [0.16, 0.13, 0.08];
 const PALETTE_BG: [f32; 3] = [0.12, 0.13, 0.18];
 /// 팔레트에 한 번에 보여줄 최대 항목 수.
 const PALETTE_MAX_ROWS: usize = 10;
+/// 힌트 라벨 배경 (kitty hints·Vimium처럼 노랑) / 글자색.
+const HINT_BG: [f32; 3] = [0.98, 0.84, 0.25];
+const HINT_FG: [f32; 3] = [0.08, 0.08, 0.1];
+const HINT_TYPED_FG: [f32; 3] = [0.55, 0.47, 0.15];
+/// 여러 줄 패널(AI 설명)의 본문 최대 줄 수. 넘치면 뒤쪽(최신)을 보여준다.
+const PANEL_MAX_ROWS: usize = 18;
 
 /// 단색 사각형 하나를 넣는 헬퍼 (크롬은 전부 불투명).
 fn fill(out: &mut Vec<BgInstance>, rect: [f32; 4], color: [f32; 3]) {
@@ -300,5 +306,123 @@ impl Renderer {
                 text_instances,
             );
         }
+    }
+
+    /// 힌트 라벨 배지. 링크 첫 글자 위에 겹쳐 그린다 (화면 픽셀 좌표).
+    pub(super) fn draw_hints(
+        &mut self,
+        hints: &[HintBadge],
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) {
+        for hint in hints {
+            let w = hint.label.chars().count() as f32 * self.cell_width;
+            fill(bg_instances, [hint.x, hint.y, w, self.cell_height], HINT_BG);
+            let mut x = hint.x;
+            for (i, ch) in hint.label.chars().enumerate() {
+                let color = if i < hint.typed {
+                    HINT_TYPED_FG
+                } else {
+                    HINT_FG
+                };
+                x = self.draw_text(
+                    &ch.to_string(),
+                    x,
+                    hint.y,
+                    hint.x + w,
+                    color,
+                    FontSize::Term,
+                    text_instances,
+                );
+            }
+        }
+    }
+
+    /// 여러 줄 패널 (AI 에러 설명). 팔레트와 같은 자리·폭에, 제목 한 줄 +
+    /// 폭에 맞춰 줄바꿈한 본문 + 하단 안내 한 줄. 스트리밍 중에는 본문이
+    /// 계속 늘어나므로 넘치면 마지막 줄들을 보여준다.
+    pub(super) fn draw_panel(
+        &mut self,
+        title: &str,
+        body: &str,
+        footer: &str,
+        bg_instances: &mut Vec<BgInstance>,
+        text_instances: &mut Vec<TextInstance>,
+    ) {
+        let theme = self.theme;
+        let screen_w = self.config.width as f32;
+        let row_h = self.cell_height;
+        let box_w = (screen_w * 0.7).min(900.0);
+        let box_x = (screen_w - box_w) / 2.0;
+        let box_y = self.tab_bar_height() + row_h;
+        let text_x = box_x + self.cell_width;
+        let max_x = box_x + box_w - self.cell_width;
+
+        let lines = self.wrap_text(body, max_x - text_x);
+        let shown = &lines[lines.len().saturating_sub(PANEL_MAX_ROWS)..];
+        // 제목(1) + 빈 줄(0.5) + 본문 + 빈 줄(0.5) + 안내(1), 위아래 여백 0.25씩
+        let box_h = row_h * (shown.len() as f32 + 3.5);
+        fill(bg_instances, [box_x, box_y, box_w, box_h], PALETTE_BG);
+
+        self.draw_text(
+            title,
+            text_x,
+            box_y + row_h * 0.25,
+            max_x,
+            theme.fg,
+            FontSize::Term,
+            text_instances,
+        );
+        for (i, line) in shown.iter().enumerate() {
+            self.draw_text(
+                line,
+                text_x,
+                box_y + row_h * (i as f32 + 1.75),
+                max_x,
+                theme.fg,
+                FontSize::Term,
+                text_instances,
+            );
+        }
+        self.draw_text(
+            footer,
+            text_x,
+            box_y + box_h - row_h * 1.25,
+            max_x,
+            theme.inactive_fg(),
+            FontSize::Term,
+            text_instances,
+        );
+    }
+
+    /// 픽셀 폭에 맞춰 줄바꿈한다. 단어 경계를 우선하되, 한 단어가 폭보다
+    /// 길면(긴 경로·URL) 글자 단위로 자른다. 원문의 개행은 그대로 줄이 된다.
+    fn wrap_text(&self, text: &str, max_w: f32) -> Vec<String> {
+        let mut out = Vec::new();
+        for para in text.split('\n') {
+            let mut line = String::new();
+            let mut width = 0.0;
+            for word in para.split_inclusive(' ') {
+                let word_w: f32 = word
+                    .chars()
+                    .map(|c| self.char_advance(c, FontSize::Term))
+                    .sum();
+                if width + word_w > max_w && !line.is_empty() {
+                    out.push(std::mem::take(&mut line).trim_end().to_string());
+                    width = 0.0;
+                }
+                for ch in word.chars() {
+                    let w = self.char_advance(ch, FontSize::Term);
+                    if width + w > max_w && !line.is_empty() {
+                        out.push(std::mem::take(&mut line));
+                        width = 0.0;
+                    }
+                    line.push(ch);
+                    width += w;
+                }
+            }
+            out.push(line.trim_end().to_string());
+        }
+        out
     }
 }
