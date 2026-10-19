@@ -16,6 +16,8 @@
 - **내장 멀티플렉서** — 탭 + 페인 분할 (tmux 없이)
 - **세션 지속성** — 창을 닫아도 셸이 데몬에 살아남고, 다시 열면 복원 (detach/attach)
 - **CLI · 에이전트 오케스트레이션** — `eden list / new / send --wait / capture / kill`로 스크립트·AI 에이전트가 세션을 조작 (tmux `send-keys` 대응). 탭 바에 실행 중·완료 상태 점
+- **세션 이름 · 포커스** — `eden new --name api`·`eden rename`으로 세션에 이름을 붙이면 CLI 어디서나 ID 대신 이름을 쓰고, 탭 제목도 이름이 된다. `eden focus api`는 GUI에서 그 탭을 앞으로 가져온다 (GUI가 꺼져 있으면 띄운다)
+- **명령 히스토리** — Cmd+R로 이 세션에서 실행한 명령을 검색해 입력줄에 넣는다 (실행은 하지 않는다)
 - **검색** — Cmd+F로 스크롤백 정규식 검색 (smart case, 매치 하이라이트, `3/17` 카운터)
 - **마우스 지원** — vim·htop·lazygit 등에 클릭·드래그·휠 전달 (Shift+드래그는 로컬 선택)
 - **하이퍼링크** — OSC 8 링크에 밑줄 + Cmd+클릭으로 열기
@@ -24,6 +26,7 @@
 - **설정 · 테마** — `~/.config/eden/config`, 컬러 프리셋(`theme = guezwhoz`) + 16색 팔레트 + Nerd Font + 커서 모양 + 배경 투명도 + macOS 라이트/다크 자동 전환(`theme-light`/`theme-dark`)
 - **폰트 자동 선택** — MesloLGS Nerd Font가 설치돼 있으면 우선 사용, 없으면 Menlo/Monaco/SF Mono. 파워라인 글리프(PUA)는 Nerd Font에서 자동 폴백
 - **한글 입력 소스에서도 단축키 동작** — 단축키는 물리 키 위치로 매칭되고, 한글 조합 중에도 Cmd 조합이 먹힌다
+- **패닉 로그** — 비정상 종료 시 `~/.cache/eden/panic.log`에 버전·역할(gui/daemon/cli)·백트레이스를 남긴다 (버그 제보 시 첨부)
 
 ## 설치 (Homebrew)
 
@@ -74,6 +77,7 @@ scrollback = 10000
 | Cmd+= / Cmd+- / Cmd+0 | 폰트 크기 키우기 / 줄이기 / 복귀 |
 | Cmd+K | AI 명령 생성 |
 | Cmd+Shift+P | 커맨드 팔레트 |
+| Cmd+R | 명령 히스토리 (고른 명령을 입력줄에 넣기만 함) |
 | Ctrl+` | Quake 드롭다운 토글 (전역 핫키) |
 
 전체 목록은 [docs/keybindings.md](docs/keybindings.md).
@@ -95,7 +99,15 @@ id=$(eden new --cwd ~/proj)                # 세션 생성 — GUI는 다음 포
 eden send $id 'cargo test' --wait; echo $? # 명령을 넣고 끝날 때까지 기다린다 (종료 코드 반환)
 eden capture $id -n 40                     # 화면 마지막 40줄
 eden kill $id
+
+eden new --name api                        # 이름 붙여 생성 — 이후 <id> 자리에 이름을 쓴다
+eden send api 'make test' --wait
+eden rename api web                        # 이름 바꾸기 ("" = 해제). 탭 제목도 이름으로 바뀐다
+eden focus web                             # GUI에서 그 탭을 앞으로 (GUI가 꺼져 있으면 띄운다)
 ```
+
+이름은 세션마다 겹칠 수 없고, 숫자만으로 된 이름은 ID와 헷갈려 쓸 수 없다.
+`eden list`의 NAME 열은 이름 있는 세션이 하나라도 있을 때만 나온다.
 
 `eden send --wait` → `eden capture` 루프로 에이전트가 세션을 돌린다.
 자세한 옵션은 `eden help`와 [features.md](docs/features.md).
