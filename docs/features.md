@@ -85,10 +85,16 @@ vim·htop·lazygit·btop처럼 마우스를 요구하는 앱에 클릭·드래�
 
 **모델 라우팅 (로컬 우선, 계정 강제 없음)**:
 
-1. `ANTHROPIC_API_KEY` 환경변수가 있으면 Anthropic API 사용 (BYOK).
-2. 없으면 로컬 [Ollama](https://ollama.com) 사용
-   (`EDEN_OLLAMA_URL`, 기본 `http://localhost:11434`;
-   `EDEN_OLLAMA_MODEL`, 기본 `llama3.2`).
+1. `ai-backend = auto`(기본): `ANTHROPIC_API_KEY` 환경변수가 있으면 Anthropic API
+   (BYOK), 없으면 로컬 [Ollama](https://ollama.com)
+   (`EDEN_OLLAMA_URL`, 기본 `http://localhost:11434`; `EDEN_OLLAMA_MODEL`, 기본 `llama3.2`).
+2. `ai-backend = ollama`: 키가 있어도 항상 로컬 Ollama — API 비용 0.
+3. `ai-backend = anthropic`: 항상 Anthropic API (키가 없으면 오류).
+
+Anthropic 모델은 `ai-model`로 고른다. 기본은 `claude-haiku-5-5` — 명령 한 줄과
+짧은 설명에는 대개 충분하고 가장 싸다. 더 어려운 에러 분석이 필요하면
+`ai-model = claude-opus-5-5`처럼 올린다. **API 요청은 Cmd+K / Cmd+Shift+K를 누를
+때만 한 건씩 나간다** — 백그라운드 호출은 없다.
 
 포커스된 페인의 최근 화면과 마지막 명령의 종료 코드를 컨텍스트로 함께 보내므로
 "방금 그 에러 고쳐줘" 같은 요청도 맥락을 반영한다.
@@ -216,8 +222,7 @@ printf '\e]777;notify;제목;본문\a'              # OSC 777 (rxvt)
 
 - 설명 끝에 고치는 명령이 있으면 `FIX: <명령>` 줄로 온다. **Enter**를 누르면 그
   명령을 입력줄에 **넣기만** 한다 — 확인하고 직접 실행한다. **Esc**는 닫기.
-- 모델 라우팅은 Cmd+K와 같다 — `ANTHROPIC_API_KEY`가 있으면 Anthropic API
-  (`claude-opus-5-5`), 없으면 로컬 Ollama.
+- 모델 라우팅은 Cmd+K와 같다 (`ai-backend`·`ai-model`, 기본 `claude-haiku-5-5`).
 - 출력은 뒤쪽 8000바이트만 보낸다 (에러는 대개 끝에 있다). 셸 통합(OSC 133)이
   켜져 있어야 실패를 안다.
 

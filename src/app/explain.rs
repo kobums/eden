@@ -105,6 +105,7 @@ impl App {
             cwd: pane.session.cwd(),
         };
         let proxy = self.proxy.clone();
+        let settings = self.ai_settings();
         std::thread::spawn(move || {
             let mut on_text = |text: &str| {
                 let _ = proxy.send_event(AppEvent::AiExplainDelta {
@@ -112,7 +113,7 @@ impl App {
                     text: text.to_string(),
                 });
             };
-            let result = ai::explain_failure(&context, &mut on_text);
+            let result = ai::explain_failure(&context, &settings, &mut on_text);
             let _ = proxy.send_event(AppEvent::AiExplainDone {
                 seq,
                 error: result.err(),

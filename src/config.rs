@@ -13,6 +13,17 @@ pub enum CursorStyle {
     Underline,
 }
 
+/// AI 요청(Cmd+K·Cmd+Shift+K)을 어디로 보낼지.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AiBackend {
+    /// `ANTHROPIC_API_KEY`가 있으면 Anthropic, 없으면 로컬 Ollama (기본)
+    Auto,
+    /// 항상 Anthropic API (키가 없으면 오류)
+    Anthropic,
+    /// 키가 있어도 항상 로컬 Ollama — API 비용 0
+    Ollama,
+}
+
 /// macOS 시스템 외양. `theme-light`/`theme-dark` 키가 이 값에 따라 갈린다.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Appearance {
@@ -64,6 +75,12 @@ pub struct Config {
     /// 앱 계층의 개념이라 설정 파서가 알 필요가 없다. 해석과 검증은
     /// `app::action`이 기본 맵을 만들 때 한 번에 한다.
     pub keybinds: Vec<(String, String)>,
+    /// AI 백엔드 선택 (`ai-backend = auto | anthropic | ollama`).
+    pub ai_backend: AiBackend,
+    /// Anthropic API 모델 ID (`ai-model`). 기본은 가장 싼 Haiku — 명령 한 줄과
+    /// 짧은 설명이라 대개 충분하고, 요청마다 비용이 드는 기능이라 싼 쪽에서
+    /// 시작해 필요하면 사용자가 올리게 한다.
+    pub ai_model: String,
 }
 
 /// 기본 16색 팔레트 (Catppuccin 계열).
@@ -101,6 +118,8 @@ impl Default for Config {
             background_opacity: 1.0,
             notify: true,
             notify_threshold: 10,
+            ai_backend: AiBackend::Auto,
+            ai_model: "claude-haiku-5-5".to_string(),
             kitty_keyboard: false,
             // 기본 끔 — 기존 사용자의 화면을 조용히 바꾸지 않는다. 켤 때는
             // 0.2 정도가 은은하다 (config.example 참고).
@@ -249,6 +268,17 @@ impl Config {
                 "off" => self.notify = false,
                 _ => {} // 잘못된 값은 기본값 유지
             },
+            "ai-backend" => match value.to_lowercase().as_str() {
+                "auto" => self.ai_backend = AiBackend::Auto,
+                "anthropic" => self.ai_backend = AiBackend::Anthropic,
+                "ollama" => self.ai_backend = AiBackend::Ollama,
+                _ => {} // 잘못된 값은 기본값 유지
+            },
+            "ai-model" => {
+                if !value.is_empty() {
+                    self.ai_model = value.to_string();
+                }
+            }
             "notify-threshold" => {
                 if let Ok(v) = value.parse::<u64>() {
                     self.notify_threshold = v;
@@ -453,6 +483,20 @@ mod tests {
         assert!(!Config::parse("notify = OFF").notify, "대소문자 무시");
         assert!(Config::parse("notify = nonsense").notify, "기본값(on) 유지");
         assert!(Config::default().notify, "기본 on");
+    }
+
+    #[test]
+    fn ai_settings_default_to_haiku_and_auto() {
+        let c = Config::parse("");
+        assert_eq!(c.ai_model, "claude-haiku-5-5");
+        assert_eq!(c.ai_backend, AiBackend::Auto);
+        let c = Config::parse("ai-model = claude-opus-5-5\nai-backend = Ollama");
+        assert_eq!(c.ai_model, "claude-opus-5-5");
+        assert_eq!(c.ai_backend, AiBackend::Ollama);
+        assert_eq!(
+            Config::parse("ai-backend = gpt").ai_backend,
+            AiBackend::Auto
+        );
     }
 
     #[test]

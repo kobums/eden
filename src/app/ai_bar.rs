@@ -79,12 +79,13 @@ impl App {
         let seq = self.ai_seq;
         self.ai = AiState::Pending;
         let proxy = self.proxy.clone();
+        let settings = self.ai_settings();
         std::thread::spawn(move || {
             let context = ai::AiContext {
                 screen_tail,
                 last_exit,
             };
-            let result = ai::generate_command(&request, &context);
+            let result = ai::generate_command(&request, &context, &settings);
             let _ = proxy.send_event(AppEvent::AiResult {
                 pane_id,
                 seq,
@@ -121,6 +122,16 @@ impl App {
             Err(error) => self.ai = AiState::Error(error),
         }
         state.window.request_redraw();
+    }
+}
+
+impl App {
+    /// 현재 설정의 AI 선택 (요청 스레드에 넘길 복사본).
+    pub(super) fn ai_settings(&self) -> ai::AiSettings {
+        ai::AiSettings {
+            backend: self.config.ai_backend,
+            model: self.config.ai_model.clone(),
+        }
     }
 }
 

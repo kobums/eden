@@ -38,6 +38,14 @@
 # notify = on
 # notify-threshold = 10
 
+# AI (Cmd+K 명령 생성, Cmd+Shift+K 에러 설명)
+# ai-backend: auto(기본 — ANTHROPIC_API_KEY가 있으면 Anthropic, 없으면 Ollama)
+#             | anthropic | ollama(키가 있어도 로컬만 — 비용 0)
+# ai-model:   Anthropic 모델 ID. 기본 claude-haiku-5-5 (가장 쌈).
+#             요청은 단축키를 누를 때만 한 건씩 나갑니다.
+# ai-backend = auto
+# ai-model = claude-haiku-5-5
+
 # Kitty keyboard protocol (CSI u): on | off (기본 off)
 # 켜면 Neovim 등 최신 TUI가 Shift+Enter, Ctrl+I(≠Tab) 같은 키를 구분할 수
 # 있습니다. 프로토콜을 쓰지 않는 앱(zsh·fzf 등)에는 영향이 없습니다.

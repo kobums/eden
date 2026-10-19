@@ -218,8 +218,9 @@ Cmd+W(Kill)는 셸에 SIGHUP을 보내 세션을 정리하며, 모든 세션이 
 ## AI 명령 생성
 
 Cmd+K로 연 입력 바에 자연어를 넣으면 별도 스레드가 요청한다. 라우팅은
-로컬 우선: `ANTHROPIC_API_KEY`가 있으면 Anthropic Messages API(BYOK,
-`claude-opus-5-5`, effort `low`, `fallbacks: "default"`), 없으면 로컬 Ollama(`EDEN_OLLAMA_URL` /
+설정 `ai-backend`(기본 `auto`: `ANTHROPIC_API_KEY`가 있으면 Anthropic Messages API —
+BYOK, 모델 `ai-model` 기본 `claude-haiku-5-5`, effort `low`, 지원 모델이면
+`fallbacks: "default"` — 없으면 로컬 Ollama(`EDEN_OLLAMA_URL` /
 `EDEN_OLLAMA_MODEL`, 기본 `llama3.2`). 포커스된 페인의 최근 화면 텍스트
 (최근 30줄, 최대 4000바이트) + 마지막 종료 코드를 컨텍스트로 함께 보낸다.
 응답은 코드 펜스·`$` 프리픽스를 정리한 뒤 삽입하고, Esc로 취소하면 시퀀스

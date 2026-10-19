@@ -1,8 +1,11 @@
 //! AI: 자연어 → 셸 명령 생성 (Cmd+K), 실패한 명령 설명 (Cmd+Shift+K, 스트리밍).
 //!
-//! 로컬 우선 원칙: 계정/클라우드 강제 없음.
-//! - `ANTHROPIC_API_KEY`가 있으면 Anthropic API (BYOK)
-//! - 없으면 로컬 Ollama (`EDEN_OLLAMA_URL`, 기본 http://localhost:11434)
+//! 로컬 우선 원칙: 계정/클라우드 강제 없음. 라우팅은 설정 `ai-backend`:
+//! - `auto`(기본): `ANTHROPIC_API_KEY`가 있으면 Anthropic API (BYOK), 없으면 Ollama
+//! - `anthropic` / `ollama`: 항상 그쪽 (`ollama`면 API 비용 0)
+//!
+//! Anthropic 모델은 설정 `ai-model` (기본 `claude-haiku-5-5`). 요청마다 비용이
+//! 드는 기능이라 가장 싼 모델에서 시작한다.
 //!
 //! 생성된 명령은 실행하지 않고 입력줄에 삽입만 한다 — 실행은 항상 사용자 몫.
 
@@ -10,11 +13,48 @@ use std::io::{BufRead, BufReader};
 
 use serde_json::{Value, json};
 
-const ANTHROPIC_MODEL: &str = "claude-opus-5-5";
+use crate::config::AiBackend;
+
 /// 거절(`stop_reason: "refusal"`) 시 서버가 거절 분류에 맞는 다른 모델로 다시
 /// 돌리게 한다. 셸 명령·에러 로그에는 보안 도구 이름이 흔해 분류기가 오판할
 /// 여지가 있는데, 모델 이름을 박아 두지 않아도 되는 `"default"` 형식을 쓴다.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+
+/// `fallbacks: "default"`를 받는 모델. 나머지(Haiku 등)는 서버 측 대체가 없어
+/// 이 필드를 보내면 요청이 거부되므로 붙이지 않는다.
+const FALLBACK_MODELS: &[&str] = &[
+    "claude-opus-5-5",
+    "claude-opus-5",
+    "claude-fable-5-1",
+    "claude-sonnet-5-5",
+];
+
+/// 설정에서 온 AI 선택 (요청 스레드로 넘기므로 복사본).
+#[derive(Clone)]
+pub struct AiSettings {
+    pub backend: AiBackend,
+    pub model: String,
+}
+
+/// 어느 쪽으로 보낼지. Anthropic이면 API 키를 함께 돌려준다.
+enum Route {
+    Anthropic(String),
+    Ollama,
+}
+
+fn route(settings: &AiSettings) -> Result<Route, String> {
+    let key = std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty());
+    match (settings.backend, key) {
+        (AiBackend::Ollama, _) => Ok(Route::Ollama),
+        (_, Some(key)) => Ok(Route::Anthropic(key)),
+        (AiBackend::Anthropic, None) => {
+            Err("ai-backend = anthropic 인데 ANTHROPIC_API_KEY가 없습니다".to_string())
+        }
+        (AiBackend::Auto, None) => Ok(Route::Ollama),
+    }
+}
 
 const SYSTEM_PROMPT: &str = "\
 You are a shell command generator embedded in a macOS terminal running zsh. \
@@ -58,6 +98,7 @@ pub struct ExplainContext {
 /// (스트리밍 — 긴 설명도 첫 글자가 바로 보이도록).
 pub fn explain_failure(
     context: &ExplainContext,
+    settings: &AiSettings,
     on_text: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
     let mut user = String::new();
@@ -75,10 +116,11 @@ pub fn explain_failure(
     user.push_str(&context.output);
     user.push_str("\n---");
 
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        anthropic_stream(&key, EXPLAIN_PROMPT, &user, on_text)
-    } else {
-        ollama_stream(EXPLAIN_PROMPT, &user, on_text)
+    match route(settings)? {
+        Route::Anthropic(key) => {
+            anthropic_stream(&key, &settings.model, EXPLAIN_PROMPT, &user, on_text)
+        }
+        Route::Ollama => ollama_stream(EXPLAIN_PROMPT, &user, on_text),
     }
 }
 
@@ -122,11 +164,12 @@ fn parse_sse_data(data: &str) -> SseEvent {
 
 fn anthropic_stream(
     api_key: &str,
+    model: &str,
     system: &str,
     user: &str,
     on_text: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
-    let mut body = request_body(system, user, "low");
+    let mut body = request_body(model, system, user);
     body["stream"] = json!(true);
     let response = anthropic_post(api_key, &body)?;
     read_sse(BufReader::new(response.into_body().into_reader()), on_text)
@@ -196,30 +239,53 @@ fn ollama_target() -> (String, String) {
     (base, model)
 }
 
-/// Messages API 요청 본문. 사고는 Opus 5.5에서 끌 수 없으므로 깊이는 `effort`로
-/// 조절한다 — 명령 한 줄·짧은 설명이라 `low`면 충분하고 응답이 빠르다.
-fn request_body(system: &str, user: &str, effort: &str) -> Value {
-    json!({
-        "model": ANTHROPIC_MODEL,
+/// Messages API 요청 본문. 최신 모델은 사고를 끌 수 없으므로 깊이는 `effort`로
+/// 조절한다 — 명령 한 줄·짧은 설명이라 `low`면 충분하고 응답·비용이 준다.
+/// `effort`를 모르는 구형 모델(4.5 세대 이전)에는 보내지 않는다 (400).
+fn request_body(model: &str, system: &str, user: &str) -> Value {
+    let mut body = json!({
+        "model": model,
         "max_tokens": 16000,
         "system": system,
         "messages": [{"role": "user", "content": user}],
-        "output_config": {"effort": effort},
-        "fallbacks": "default",
-    })
+    });
+    if supports_effort(model) {
+        body["output_config"] = json!({"effort": "low"});
+    }
+    if FALLBACK_MODELS.contains(&model) {
+        body["fallbacks"] = json!("default");
+    }
+    body
+}
+
+fn supports_effort(model: &str) -> bool {
+    !(model.starts_with("claude-3")
+        || model.starts_with("claude-haiku-4")
+        || model.starts_with("claude-sonnet-4-5")
+        || model.starts_with("claude-opus-4-1")
+        || model.starts_with("claude-opus-4-0")
+        || model.starts_with("claude-sonnet-4-0"))
 }
 
 fn anthropic_post(api_key: &str, body: &Value) -> Result<ureq::http::Response<ureq::Body>, String> {
-    ureq::post("https://api.anthropic.com/v1/messages")
+    let mut request = ureq::post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
-        .header("anthropic-beta", FALLBACK_BETA)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    // 베타 헤더는 fallbacks를 실제로 보낼 때만 — 쓰지 않는 베타를 켜 두지 않는다
+    if body.get("fallbacks").is_some() {
+        request = request.header("anthropic-beta", FALLBACK_BETA);
+    }
+    request
         .send(body.to_string())
         .map_err(|e| format!("Anthropic API 요청 실패: {e}"))
 }
 
-pub fn generate_command(request: &str, context: &AiContext) -> Result<String, String> {
+pub fn generate_command(
+    request: &str,
+    context: &AiContext,
+    settings: &AiSettings,
+) -> Result<String, String> {
     let mut user = String::new();
     if !context.screen_tail.trim().is_empty() {
         user.push_str("Recent terminal screen (most recent last):\n---\n");
@@ -232,17 +298,16 @@ pub fn generate_command(request: &str, context: &AiContext) -> Result<String, St
     user.push_str("Request: ");
     user.push_str(request);
 
-    let raw = if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        anthropic(&key, &user)?
-    } else {
-        ollama(&user)?
+    let raw = match route(settings)? {
+        Route::Anthropic(key) => anthropic(&key, &settings.model, &user)?,
+        Route::Ollama => ollama(&user)?,
     };
     clean_command(&raw)
 }
 
 /// Anthropic Messages API (raw HTTP — Rust는 공식 SDK가 없어 cURL 형태를 따른다).
-fn anthropic(api_key: &str, user: &str) -> Result<String, String> {
-    let body = request_body(SYSTEM_PROMPT, user, "low");
+fn anthropic(api_key: &str, model: &str, user: &str) -> Result<String, String> {
+    let body = request_body(model, SYSTEM_PROMPT, user);
     let mut response = anthropic_post(api_key, &body)?;
 
     let value: Value = response
@@ -417,6 +482,28 @@ data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\
             "{\"error\":\"model not found\"}\n",
         );
         assert_eq!(err, Err("Ollama 오류: model not found".into()));
+    }
+
+    #[test]
+    fn haiku_request_has_effort_but_no_fallbacks() {
+        let body = request_body("claude-haiku-5-5", "s", "u");
+        assert_eq!(body["model"], "claude-haiku-5-5");
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert!(body.get("fallbacks").is_none());
+    }
+
+    #[test]
+    fn opus_request_opts_into_default_fallbacks() {
+        let body = request_body("claude-opus-5-5", "s", "u");
+        assert_eq!(body["fallbacks"], "default");
+        assert_eq!(body["output_config"]["effort"], "low");
+    }
+
+    #[test]
+    fn old_models_get_no_effort() {
+        let body = request_body("claude-haiku-4-5", "s", "u");
+        assert!(body.get("output_config").is_none());
+        assert!(body.get("fallbacks").is_none());
     }
 
     #[test]

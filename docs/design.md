@@ -384,10 +384,13 @@
     보낸다. 응답은 SSE(`content_block_delta`/`text_delta`)로 받아 패널에 바로
     흘린다. Ollama는 NDJSON 스트림. 설명 끝 `FIX: <명령>` 줄은 Enter로 **입력줄에
     넣기만** 한다 (Cmd+K와 같은 원칙). 종료 코드 없는 `D`는 실패로 보지 않는다
-  - **모델 `claude-opus-5-5`** — Cmd+K도 함께 옮겼다. Opus 5.5는 사고를 끌 수
-    없어 `output_config.effort: "low"`로 깊이를 낮춰 응답을 빠르게 하고,
-    `fallbacks: "default"`(`server-side-fallback-2026-07-01`)로 거절 시 서버가
-    다른 모델로 재시도하게 했다. 스트림의 `refusal`·`error` 이벤트는 오류로 표시
+  - **모델은 설정으로 (`ai-model`, 기본 `claude-haiku-5-5`)** — 요청마다 비용이 드는
+    기능이라 가장 싼 모델에서 시작한다 (Cmd+K도 같은 설정, 이전 하드코딩
+    `claude-opus-4-8`). `ai-backend = auto | anthropic | ollama`로 키가 있어도
+    로컬만 쓰게 할 수 있다. 최신 모델은 사고를 끌 수 없어 `output_config.effort:
+    "low"`로 깊이를 낮추고(구형 모델엔 안 보냄), 서버 측 대체를 지원하는 모델
+    (Opus 5.5 등)에만 `fallbacks: "default"`(`server-side-fallback-2026-07-01`)를
+    붙인다 — Haiku에 보내면 400. 스트림의 `refusal`·`error` 이벤트는 오류로 표시
   - **키보드 힌트 모드 (Cmd+Shift+O)** — Phase 16의 `visible_urls()`로 보이는 URL마다
     홈로우 라벨(26개 이하 한 글자, 넘으면 전부 두 글자 — 접두 충돌 방지)을 띄우고,
     라벨을 치면 `open`. 글자는 물리 키로 받아 한글 입력 소스에서도 된다

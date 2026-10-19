@@ -40,6 +40,8 @@ background = #16161e
 | `notify` | `on` \| `off` | `on` | 명령 완료 알림 + OSC 9/777 알림 |
 | `notify-threshold` | 정수 (초) | `10` | 이보다 오래 걸린 명령만 알린다 |
 | `kitty-keyboard` | `on` \| `off` | `off` | Kitty keyboard protocol (CSI u) |
+| `ai-backend` | `auto` \| `anthropic` \| `ollama` | `auto` | AI(Cmd+K·Cmd+Shift+K) 요청을 보낼 곳. `auto`는 `ANTHROPIC_API_KEY`가 있으면 Anthropic, 없으면 Ollama. `ollama`면 키가 있어도 로컬만 (비용 0) |
+| `ai-model` | 모델 ID | `claude-haiku-5-5` | Anthropic API 모델. 예: `claude-sonnet-5-5`, `claude-opus-5-5` (비쌀수록 설명 품질↑) |
 | `keybind` | `<조합> = <액션>` | (기본표) | 키바인딩 재정의. 여러 줄 가능 — 아래 참고 |
 
 색은 `#` 유무 모두 허용된다 (`#16161e` = `16161e`).

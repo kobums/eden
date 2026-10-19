@@ -91,14 +91,17 @@ scrollback = 10000
 
 Cmd+K 후 자연어(한/영)를 입력하고 Enter. 우선순위:
 
-1. `ANTHROPIC_API_KEY`가 있으면 Anthropic API (BYOK)
+1. `ANTHROPIC_API_KEY`가 있으면 Anthropic API (BYOK, 기본 모델 `claude-haiku-5-5`)
 2. 없으면 로컬 [Ollama](https://ollama.com) (`EDEN_OLLAMA_URL`, 기본 `http://localhost:11434`)
+
+설정 `ai-backend = ollama`로 키가 있어도 항상 로컬 모델(비용 0)을 쓰게 할 수 있고,
+`ai-model = claude-opus-5-5`처럼 Anthropic 모델을 바꿀 수 있습니다.
+API 요청은 단축키를 누를 때만 한 건씩 나갑니다.
 
 생성된 명령은 **실행되지 않고** 프롬프트에 삽입만 됩니다. 실행 여부는 사용자가 결정.
 
 명령이 실패했을 때 **Cmd+Shift+K**를 누르면 같은 라우팅으로 실패 원인을 설명받습니다.
 설명은 스트리밍으로 흘러나오고, 끝의 `FIX:` 명령은 Enter로 입력줄에 넣을 수 있습니다.
-Anthropic API는 `claude-opus-5-5`를 씁니다.
 
 ## CLI (스크립트 · AI 에이전트)
 
