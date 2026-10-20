@@ -98,6 +98,16 @@ fn content_rect(window: &Window, renderer: &renderer::Renderer) -> Rect {
     }
 }
 
+impl App {
+    /// 창과 탭이 하나 이상 있는가. 마지막 탭을 닫으면 `event_loop.exit()`를
+    /// 부르지만 winit은 그 뒤에도 남은 이벤트(다시 그리기·포커스·틱)를 몇 개
+    /// 더 보낸다. 그때 `active_tab()`이 빈 목록을 인덱싱해 패닉했다 (panic.log로
+    /// 잡힘, 2026-10-20). 이벤트 처리 입구에서 막는다.
+    fn has_tabs(&self) -> bool {
+        self.state.as_ref().is_some_and(|s| !s.tabs.is_empty())
+    }
+}
+
 impl State {
     fn active_tab(&self) -> &Tab {
         &self.tabs[self.active]
@@ -766,7 +776,7 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
-        if self.state.is_none() {
+        if !self.has_tabs() {
             return;
         }
         match app_event {
@@ -817,7 +827,11 @@ impl ApplicationHandler<AppEvent> for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        if self.state.is_none() {
+        if !self.has_tabs() {
+            // 창을 닫는 중에도(CloseRequested) 종료는 계속돼야 한다
+            if matches!(event, WindowEvent::CloseRequested) {
+                event_loop.exit();
+            }
             return;
         }
         match event {
