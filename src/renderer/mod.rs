@@ -594,6 +594,10 @@ impl Renderer {
         }
 
         self.draw_tab_bar(tabs, active_tab, &mut bg_instances, &mut text_instances);
+        // 여기까지가 기본 층. 아래 오버레이는 별도 층으로 그려야 한다 — 한 층에
+        // 섞으면 배경을 전부 그린 뒤 글자를 전부 그리므로, 오버레이 배경 위로
+        // 그 아래 터미널 글자가 비쳐 보인다 (AI 바·설명 패널·팔레트가 겹쳐 보이던 문제).
+        let base = (bg_instances.len(), text_instances.len());
         // AI 바·검색 바·팔레트는 오버레이이므로 마지막에 (페인 위에) 그린다.
         if let Some(line) = ai_bar {
             ime_pos = Some(self.draw_ai_bar(line, &mut bg_instances, &mut text_instances));
@@ -617,7 +621,7 @@ impl Renderer {
         if let Some((title, body, footer)) = panel {
             self.draw_panel(title, body, footer, &mut bg_instances, &mut text_instances);
         }
-        self.submit(&bg_instances, &text_instances);
+        self.submit(&bg_instances, &text_instances, base);
         ime_pos
     }
 
@@ -645,7 +649,15 @@ impl Renderer {
     }
 
     /// 인스턴스를 업로드하고 프레임을 그린다.
-    fn submit(&mut self, bg_instances: &[BgInstance], text_instances: &[TextInstance]) {
+    /// 인스턴스를 올리고 그린다. `base`는 (기본 층 배경 수, 기본 층 글자 수) —
+    /// 그 뒤의 인스턴스는 오버레이 층이다. 순서: 기본 배경 → 기본 글자 →
+    /// 오버레이 배경 → 오버레이 글자. 버퍼는 하나씩 그대로 쓰고 인스턴스 범위만 나눈다.
+    fn submit(
+        &mut self,
+        bg_instances: &[BgInstance],
+        text_instances: &[TextInstance],
+        base: (usize, usize),
+    ) {
         let globals = Globals {
             screen: [
                 self.config.width as f32,
@@ -724,16 +736,26 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.globals_bind_group, &[]);
-            if !bg_instances.is_empty() {
-                pass.set_pipeline(&self.bg_pipeline);
-                pass.set_vertex_buffer(0, self.bg_buffer.slice(..bg_bytes.len() as u64));
-                pass.draw(0..6, 0..bg_instances.len() as u32);
-            }
-            if !text_instances.is_empty() {
-                pass.set_pipeline(&self.text_pipeline);
-                pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.text_buffer.slice(..text_bytes.len() as u64));
-                pass.draw(0..6, 0..text_instances.len() as u32);
+            let (base_bg, base_text) = (base.0 as u32, base.1 as u32);
+            let layers = [
+                (0..base_bg, 0..base_text),
+                (
+                    base_bg..bg_instances.len() as u32,
+                    base_text..text_instances.len() as u32,
+                ),
+            ];
+            for (bg_range, text_range) in layers {
+                if !bg_range.is_empty() {
+                    pass.set_pipeline(&self.bg_pipeline);
+                    pass.set_vertex_buffer(0, self.bg_buffer.slice(..bg_bytes.len() as u64));
+                    pass.draw(0..6, bg_range);
+                }
+                if !text_range.is_empty() {
+                    pass.set_pipeline(&self.text_pipeline);
+                    pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.text_buffer.slice(..text_bytes.len() as u64));
+                    pass.draw(0..6, text_range);
+                }
             }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
