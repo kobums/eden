@@ -68,9 +68,9 @@ keybind = cmd+e = split-right
 |---|---|
 | 탭 | `new-tab` `close-pane` `next-tab` `prev-tab` `select-tab-1` … `select-tab-9` |
 | 분할 | `split-right` `split-down` `toggle-zoom` `focus-left` `focus-right` `focus-up` `focus-down` |
-| 블록 | `jump-prev-prompt` `jump-next-prompt` `copy-last-output` |
+| 블록 | `jump-prev-prompt` `jump-next-prompt` `copy-last-output` `toggle-fold-last` `unfold-all` `rerun-last` |
 | 폰트 | `font-size-up` `font-size-down` `font-size-reset` |
-| 기타 | `copy` `paste` `search` `palette` `ai-generate` |
+| 기타 | `copy` `paste` `search` `palette` `ai-generate` `ai-explain` `command-history` `open-hints` |
 
 해석할 수 없는 줄(모르는 키·액션, `cmd` 없음)은 조용히 무시되고 기본값이
 유지된다. Cmd+C·Cmd+V 같은 시스템 관례 키도 재정의할 수 있지만, 복사·붙여넣기가

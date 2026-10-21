@@ -43,7 +43,8 @@ Term은 GUI 쪽에 남기 때문에 선택·스크롤·블록·AI 등 모든 기
 | `osc.rs` | OSC 133/7 스캔 순수 함수 + `ShellState` — GUI 세션과 mux 데몬이 공유 |
 | `app/` | winit 앱 — 창/탭/페인 상태, 이벤트 루프 배선, 입력 라우팅 |
 | `renderer/` | wgpu 렌더러 — glyph atlas, 셀 배경/글리프 2패스, 크롬, 오버레이 |
-| `session.rs` | 페인 세션 — Term + OSC 133 스캐너 + 블록 도출 + mux 클라이언트 |
+| `session.rs` | 페인 세션 — Term + OSC 133 스캐너 + 블록 도출·접기 상태 + mux 클라이언트 |
+| `fold.rs` | 블록 접기의 "가상 행" 계산 — 접힌 범위를 한 행으로 줄인 화면 행 목록, 가상 행 단위 스크롤 (순수 함수) |
 | `mux.rs` | mux 데몬 + 클라이언트 + 프레임 프로토콜 (세션 지속성, 세션별 셸 상태) |
 | `layout.rs` | 페인 이진 분할 트리 (분할/제거/배치 계산·줌) |
 | `config.rs` | 설정 파일 파서 (`key = value`) |
@@ -57,14 +58,15 @@ Term은 GUI 쪽에 남기 때문에 선택·스크롤·블록·AI 등 모든 기
 |---|---|
 | `mod.rs` | `App`·`State`·`Tab` 정의, 탭/페인 생성·분할·닫기, 재그리기, 이벤트 디스패치 |
 | `input.rs` | 키보드·IME → 앱 단축키 또는 PTY 바이트 (`key_to_bytes`) |
-| `mouse.rs` | 클릭·드래그 선택·더블/트리플 클릭·휠·Cmd+클릭·마우스 리포팅 배선 |
+| `mouse.rs` | 클릭·드래그 선택·더블/트리플 클릭·휠·Cmd+클릭·거터 클릭(접기/재실행)·마우스 리포팅 배선 |
+| `blocks.rs` | 블록 접기 토글·재실행 (실행 중이면 보내지 않음, 잘린 명령줄은 삽입만) |
 | `mouse_report.rs` | 마우스 리포트 인코딩 (X10/UTF-8/SGR) — 순수 함수, 단위 테스트 대상 |
 | `clipboard.rs` | 선택 복사, 붙여넣기, 마지막 출력 복사 |
 | `action.rs` | 앱 액션 enum + 키맵 — 키바인딩과 팔레트가 공유하는 단일 소스 |
 | `kitty_key.rs` | Kitty keyboard protocol (CSI u) 인코딩 — 순수 함수, 단위 테스트 대상 |
 | `palette.rs` | 커맨드 팔레트 필터·표시 목록 + 액션 실행부(`run_action`) |
 | `search.rs` | 스크롤백 검색 (Cmd+F) — 절대 줄 좌표 매치, alacritty RegexIter 사용 |
-| `links.rs` | 평문 URL 감지 (뷰포트 한정 정규식 스캔) — 밑줄·Cmd+클릭 |
+| `links.rs` | 평문 URL 감지 (화면 행 목록의 보이는 줄만 정규식 스캔) — 밑줄·Cmd+클릭 |
 | `notify.rs` | 명령 완료·OSC 9/777 알림 — 조건 판단(순수 함수) + AppKit 전달 |
 | `layout_persist.rs` | 탭·페인 구조 ↔ `layout.json` 직렬화와 가지치기 |
 | `ai_bar.rs` | AI 바 상태, 컨텍스트 수집, 생성 결과 삽입 |
