@@ -19,6 +19,7 @@ use bytemuck::{Pod, Zeroable};
 use winit::window::Window;
 
 use crate::app::search::AbsMatch;
+use crate::fold::Fold;
 use crate::layout::Rect;
 use crate::session::{Block, EventProxy};
 use color::Theme;
@@ -79,6 +80,8 @@ pub enum TabStatus {
 pub struct PaneView<'a> {
     pub term: &'a FairMutex<Term<EventProxy>>,
     pub blocks: &'a [Block],
+    /// 접힌 출력 범위 (Phase 25). 비어 있으면 그리드 뷰포트를 그대로 그린다.
+    pub folds: &'a [Fold],
     pub rect: Rect,
     pub focused: bool,
     /// 검색 매치 (절대 줄 번호). 검색이 닫혀 있으면 빈 슬라이스.

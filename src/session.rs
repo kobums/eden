@@ -4,6 +4,7 @@
 //! PTY 바이트 스트림에서 OSC 133(셸 통합 마크)을 파서에 넣기 전에 가로채
 //! 블록/프롬프트 경계를 기록하기 위해서다.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,7 @@ use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::Processor;
 use winit::event_loop::EventLoopProxy;
 
+use crate::fold::{Fold, FoldView, ViewRow};
 use crate::mux::{self, MuxClient, MuxMsg};
 use crate::osc::{
     self, OSC7_PREFIX, OSC133_PREFIX, collect_osc_payloads, find_subsequence,
@@ -158,7 +160,7 @@ pub struct Mark {
 pub type Marks = Arc<Mutex<Vec<Mark>>>;
 
 /// OSC 133 마크로부터 도출된 명령 블록 (프롬프트 + 명령 + 출력 단위).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     /// 프롬프트 시작 줄 (A 마크)
     pub start_abs: i64,
@@ -168,6 +170,52 @@ pub struct Block {
     pub end_abs: Option<i64>,
     /// 종료 코드 (D;<exit>)
     pub exit: Option<i32>,
+    /// C 마크의 명령줄 (재실행용). 셸 통합이 안 보내면 None.
+    pub command: Option<String>,
+}
+
+/// 셸 통합 스크립트가 `cmdline_url`을 자르는 길이(문자). 이 길이에 닿은
+/// 명령줄은 잘렸을 수 있으므로 **실행하지 않고 입력줄에 넣기만** 한다.
+pub const CMDLINE_LIMIT: usize = 512;
+
+/// 접을 수 있는 최소 출력 줄 수. 한 줄짜리 출력을 한 줄짜리 placeholder로
+/// 바꾸는 것은 의미가 없다.
+const MIN_FOLD_LINES: i64 = 2;
+
+impl Block {
+    /// 이 블록의 출력이 접힐 수 있으면 그 범위. 실행 중이거나 출력이 짧으면 None.
+    pub fn fold(&self) -> Option<Fold> {
+        let start = self.cmd_abs?;
+        let end = self.end_abs? - 1;
+        (end - start + 1 >= MIN_FOLD_LINES).then_some(Fold {
+            key: self.start_abs,
+            start,
+            end,
+        })
+    }
+
+    /// 재실행해도 되는 명령줄 — 셸 통합이 자른 길이에 닿은 것은 `Err`로
+    /// 돌려주어 호출자가 실행 대신 입력줄 삽입으로 물러나게 한다.
+    pub fn rerunnable(&self) -> Option<Result<&str, &str>> {
+        let cmd = self.command.as_deref()?;
+        Some(if cmd.chars().count() >= CMDLINE_LIMIT {
+            Err(cmd)
+        } else {
+            Ok(cmd)
+        })
+    }
+}
+
+/// `abs`가 속한 블록. 블록의 화면상 범위는 시작(A)부터 다음 블록 시작 전
+/// 줄까지이고, 마지막 블록은 `cursor_abs`까지다.
+pub fn block_containing(blocks: &[Block], abs: i64, cursor_abs: i64) -> Option<&Block> {
+    blocks.iter().enumerate().find_map(|(i, block)| {
+        let span_end = blocks
+            .get(i + 1)
+            .map(|next| next.start_abs - 1)
+            .unwrap_or(cursor_abs);
+        (block.start_abs <= abs && abs <= span_end).then_some(block)
+    })
 }
 
 /// Term 설정. 순수 함수로 분리해 소켓·스레드 없이 Term만으로 프로토콜
@@ -194,6 +242,9 @@ pub struct Session {
     pub cwd: Arc<Mutex<String>>,
     /// 데몬이 알려준 세션 이름 (`eden rename`). 비어 있으면 탭에 셸 제목을 쓴다.
     pub name: Arc<Mutex<String>>,
+    /// 접힌 블록의 키(프롬프트 줄). GUI에만 있고 데몬에 저장하지 않는다 —
+    /// detach 뒤 다시 붙으면 전부 펼쳐진 상태로 시작한다.
+    folded: Mutex<BTreeSet<i64>>,
     client: Arc<MuxClient>,
 }
 
@@ -293,6 +344,7 @@ impl Session {
             marks,
             cwd,
             name,
+            folded: Mutex::new(BTreeSet::new()),
             client: Arc::new(client),
         }
     }
@@ -324,33 +376,69 @@ impl Session {
     /// 마크 목록에서 블록들을 도출한다.
     pub fn blocks(&self) -> Vec<Block> {
         let marks = self.marks.lock().unwrap();
-        let mut blocks: Vec<Block> = Vec::new();
-        for mark in marks.iter() {
-            match mark.kind {
-                MarkKind::PromptStart => blocks.push(Block {
-                    start_abs: mark.abs_line,
-                    cmd_abs: None,
-                    end_abs: None,
-                    exit: None,
-                }),
-                MarkKind::CommandStart => {
-                    if let Some(block) = blocks.last_mut()
-                        && block.cmd_abs.is_none()
-                    {
-                        block.cmd_abs = Some(mark.abs_line);
-                    }
-                }
-                MarkKind::CommandEnd(exit) => {
-                    if let Some(block) = blocks.last_mut()
-                        && block.end_abs.is_none()
-                    {
-                        block.end_abs = Some(mark.abs_line);
-                        block.exit = exit;
-                    }
-                }
-            }
+        derive_blocks(&marks)
+    }
+
+    /// 접힌 출력 범위들 (시작 줄 오름차순). 접힌 블록이 없으면 빈 벡터 —
+    /// 렌더러·마우스는 그때 그리드 뷰포트를 그대로 쓴다.
+    ///
+    /// 잠금 순서: `folded` → `marks`. 읽기 스레드는 `term`을 쥔 채 `marks`를
+    /// 잠그므로, 호출자는 이 메서드를 **term을 잠그기 전에** 불러야 한다.
+    pub fn folds(&self) -> Vec<Fold> {
+        let folded = self.folded.lock().unwrap();
+        if folded.is_empty() {
+            return Vec::new();
         }
-        blocks
+        self.blocks()
+            .iter()
+            .filter(|b| folded.contains(&b.start_abs))
+            .filter_map(Block::fold)
+            .collect()
+    }
+
+    /// 블록의 출력을 접거나 펼친다. 접을 수 없는 블록(실행 중, 출력 짧음)이면
+    /// 아무것도 하지 않는다. 돌려주는 값은 호출 뒤 접힘 여부.
+    pub fn toggle_fold(&self, block: &Block) -> Option<bool> {
+        block.fold()?;
+        let mut folded = self.folded.lock().unwrap();
+        if folded.remove(&block.start_abs) {
+            Some(false)
+        } else {
+            folded.insert(block.start_abs);
+            Some(true)
+        }
+    }
+
+    pub fn unfold_all(&self) {
+        self.folded.lock().unwrap().clear();
+    }
+
+    /// `abs`를 숨기고 있는 접힌 블록이 있으면 펼친다 (검색 히트·점프가
+    /// 접힌 안쪽을 가리킬 때).
+    fn unfold_containing(&self, abs: i64) {
+        let folds = self.folds();
+        if let Some(i) = FoldView::new(&folds, i64::MAX).fold_at(abs) {
+            self.folded.lock().unwrap().remove(&folds[i].key);
+        }
+    }
+
+    /// 마지막으로 완료된 명령 블록 (재실행·접기 대상).
+    pub fn last_completed_block(&self) -> Option<Block> {
+        self.blocks()
+            .into_iter()
+            .rev()
+            .find(|b| b.cmd_abs.is_some() && b.end_abs.is_some())
+    }
+
+    /// 마지막으로 접을 수 있는 블록.
+    pub fn last_foldable_block(&self) -> Option<Block> {
+        self.blocks().into_iter().rev().find(|b| b.fold().is_some())
+    }
+
+    /// 현재 스크롤 위치의 화면 행 목록. `term`은 호출자가 잠근 것 — 잠금
+    /// 순서 때문에 접힌 범위를 먼저 읽고 넘긴다.
+    pub fn view_rows(&self, folds: &[Fold], term: &Term<EventProxy>) -> Vec<ViewRow> {
+        crate::fold::rows_for(term, folds)
     }
 
     /// 명령이 실행 중인가 — 마지막 마크가 C(CommandStart)다.
@@ -393,10 +481,16 @@ impl Session {
                 .collect()
         };
 
+        let folds = self.folds();
         let mut term = self.term.lock();
         let history = term.grid().history_size() as i64;
         let offset = term.grid().display_offset() as i64;
-        let top_abs = history - offset;
+        let screen = Dimensions::screen_lines(term.grid());
+        let last_abs = history + screen as i64 - 1;
+        let view = FoldView::new(&folds, last_abs);
+        // 접힌 블록이 있으면 화면 맨 위 행은 그리드 뷰포트 맨 위가 아니다.
+        let top_abs =
+            top_abs_of(&self.view_rows(&folds, &term), &folds).unwrap_or(history - offset);
 
         let target = if direction < 0 {
             prompts.iter().copied().filter(|abs| *abs < top_abs).max()
@@ -406,12 +500,29 @@ impl Session {
 
         match target {
             Some(abs) => {
-                let new_offset = (history - abs).clamp(0, history);
+                let new_offset = view.offset_for_top(abs, screen).clamp(0, history);
                 term.scroll_display(Scroll::Delta((new_offset - offset) as i32));
             }
             None if direction > 0 => term.scroll_display(Scroll::Bottom),
             None => {}
         }
+    }
+
+    /// 휠 스크롤 `delta`줄(양수 = 위로). 접힌 블록이 있으면 가상 행 단위로
+    /// 움직여 접힌 구간에서 휠이 헛도는 일이 없게 한다.
+    pub fn scroll_lines(&self, delta: i32) {
+        let folds = self.folds();
+        let mut term = self.term.lock();
+        if folds.is_empty() {
+            term.scroll_display(Scroll::Delta(delta));
+            return;
+        }
+        let history = term.grid().history_size() as i64;
+        let offset = term.grid().display_offset() as i64;
+        let screen = Dimensions::screen_lines(term.grid()) as i64;
+        let view = FoldView::new(&folds, history + screen - 1);
+        let new_offset = view.scrolled(offset, delta as i64, history);
+        term.scroll_display(Scroll::Delta((new_offset - offset) as i32));
     }
 
     /// 절대 줄 `abs`가 화면에 없으면 가운데로 오도록 스크롤한다.
@@ -423,18 +534,23 @@ impl Session {
     ///
     /// 뷰포트 위치 계산은 `jump_to_prompt`와 같다: `scroll_display`가 상대
     /// 델타만 받으므로 원하는 절대 offset에서 현재 offset을 뺀다.
+    ///
+    /// 대상이 접힌 블록 안이면 먼저 펼친다 — 검색 히트가 보이지 않으면 검색의
+    /// 의미가 없다.
     pub fn scroll_to_abs(&self, abs: i64) {
+        self.unfold_containing(abs);
+        let folds = self.folds();
         let mut term = self.term.lock();
         let history = term.grid().history_size() as i64;
         let offset = term.grid().display_offset() as i64;
-        let screen = Dimensions::screen_lines(term.grid()) as i64;
+        let screen = Dimensions::screen_lines(term.grid());
 
-        let top_abs = history - offset;
-        if abs >= top_abs && abs < top_abs + screen {
+        if self.view_rows(&folds, &term).contains(&ViewRow::Line(abs)) {
             return; // 이미 보인다
         }
 
-        let target = (history - abs + screen / 2).clamp(0, history);
+        let view = FoldView::new(&folds, history + screen as i64 - 1);
+        let target = view.offset_centered(abs, screen).clamp(0, history);
         term.scroll_display(Scroll::Delta((target - offset) as i32));
     }
 }
@@ -712,6 +828,48 @@ fn record_mark(term: &Term<EventProxy>, marks: &Marks, proxy: &EventProxy, paylo
     if *DEBUG.get_or_init(|| std::env::var_os("EDEN_DEBUG_MARKS").is_some()) {
         eprintln!("[mark] {kind:?} abs_line={abs_line}");
     }
+}
+
+/// 마크 목록 → 블록 목록 (시작 줄 오름차순).
+fn derive_blocks(marks: &[Mark]) -> Vec<Block> {
+    let mut blocks: Vec<Block> = Vec::new();
+    for mark in marks {
+        match mark.kind {
+            MarkKind::PromptStart => blocks.push(Block {
+                start_abs: mark.abs_line,
+                cmd_abs: None,
+                end_abs: None,
+                exit: None,
+                command: None,
+            }),
+            MarkKind::CommandStart => {
+                if let Some(block) = blocks.last_mut()
+                    && block.cmd_abs.is_none()
+                {
+                    block.cmd_abs = Some(mark.abs_line);
+                    block.command = mark.cmdline.clone();
+                }
+            }
+            MarkKind::CommandEnd(exit) => {
+                if let Some(block) = blocks.last_mut()
+                    && block.end_abs.is_none()
+                {
+                    block.end_abs = Some(mark.abs_line);
+                    block.exit = exit;
+                }
+            }
+        }
+    }
+    blocks
+}
+
+/// 화면 맨 위 행의 절대 줄 (Blank는 건너뛴다). 접힌 행이면 그 범위의 시작 줄.
+fn top_abs_of(rows: &[ViewRow], folds: &[Fold]) -> Option<i64> {
+    rows.iter().find_map(|row| match *row {
+        ViewRow::Line(abs) => Some(abs),
+        ViewRow::Fold(i) => Some(folds[i].start),
+        ViewRow::Blank => None,
+    })
 }
 
 /// 실패한 명령 하나 — 명령줄과 출력 범위(절대 줄 번호, 양 끝 포함).
@@ -1104,5 +1262,103 @@ mod tests {
             notify_once(b"\x1b]9;one\x07mid\x1b]9;two\x07"),
             vec![(None, "one".to_string()), (None, "two".to_string())]
         );
+    }
+
+    // ─── 블록 도출 · 접기 · 재실행 (Phase 25) ───
+
+    fn three_blocks() -> Vec<Block> {
+        use MarkKind::*;
+        derive_blocks(&[
+            mark(PromptStart, 0, None),
+            mark(CommandStart, 1, Some("ls")),
+            mark(CommandEnd(Some(0)), 2, None), // 출력 1줄
+            mark(PromptStart, 2, None),
+            mark(CommandStart, 3, Some("make")),
+            mark(CommandEnd(Some(2)), 10, None), // 출력 7줄
+            mark(PromptStart, 10, None),
+            mark(CommandStart, 11, Some("sleep 9")), // 실행 중
+        ])
+    }
+
+    #[test]
+    fn derive_blocks_carries_command_and_exit() {
+        let blocks = three_blocks();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[1].command.as_deref(), Some("make"));
+        assert_eq!(blocks[1].exit, Some(2));
+        assert_eq!(blocks[2].end_abs, None, "실행 중");
+    }
+
+    #[test]
+    fn only_completed_blocks_with_enough_output_fold() {
+        let blocks = three_blocks();
+        assert_eq!(blocks[0].fold(), None, "출력 1줄은 접지 않는다");
+        assert_eq!(
+            blocks[1].fold(),
+            Some(Fold {
+                key: 2,
+                start: 3,
+                end: 9
+            })
+        );
+        assert_eq!(blocks[2].fold(), None, "실행 중");
+    }
+
+    #[test]
+    fn block_containing_uses_next_block_start_or_cursor() {
+        let blocks = three_blocks();
+        assert_eq!(
+            block_containing(&blocks, 0, 15).map(|b| b.start_abs),
+            Some(0)
+        );
+        assert_eq!(
+            block_containing(&blocks, 1, 15).map(|b| b.start_abs),
+            Some(0)
+        );
+        assert_eq!(
+            block_containing(&blocks, 2, 15).map(|b| b.start_abs),
+            Some(2)
+        );
+        assert_eq!(
+            block_containing(&blocks, 9, 15).map(|b| b.start_abs),
+            Some(2)
+        );
+        assert_eq!(
+            block_containing(&blocks, 15, 15).map(|b| b.start_abs),
+            Some(10)
+        );
+        assert_eq!(
+            block_containing(&blocks, 16, 15),
+            None,
+            "커서 아래는 어느 블록도 아니다"
+        );
+    }
+
+    #[test]
+    fn truncated_cmdline_is_not_rerunnable() {
+        let mut block = three_blocks().remove(1);
+        assert_eq!(block.rerunnable(), Some(Ok("make")));
+        block.command = Some("x".repeat(CMDLINE_LIMIT));
+        assert!(matches!(block.rerunnable(), Some(Err(_))));
+        block.command = None;
+        assert_eq!(block.rerunnable(), None);
+    }
+
+    #[test]
+    fn top_abs_skips_blank_rows_and_uses_fold_start() {
+        let folds = [Fold {
+            key: 2,
+            start: 3,
+            end: 9,
+        }];
+        assert_eq!(
+            top_abs_of(&[ViewRow::Blank, ViewRow::Line(7)], &folds),
+            Some(7)
+        );
+        assert_eq!(
+            top_abs_of(&[ViewRow::Fold(0), ViewRow::Line(10)], &folds),
+            Some(3)
+        );
+        assert_eq!(top_abs_of(&[ViewRow::Blank], &folds), None);
     }
 }

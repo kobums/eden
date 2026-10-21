@@ -13,6 +13,7 @@ mod ai;
 mod app;
 mod cli;
 mod config;
+mod fold;
 mod layout;
 mod mux;
 mod osc;

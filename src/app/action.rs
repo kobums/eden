@@ -47,6 +47,12 @@ pub(super) enum Action {
     AiExplain,
     /// 보이는 링크에 라벨을 띄워 키보드로 연다 (Cmd+Shift+O).
     OpenHints,
+    /// 마지막으로 완료된 블록의 출력을 접거나 펼친다 (Cmd+Option+[).
+    ToggleFoldLast,
+    /// 접힌 블록을 전부 펼친다 (Cmd+Option+]).
+    UnfoldAll,
+    /// 마지막으로 완료된 명령을 다시 실행한다 (Cmd+Shift+R).
+    RerunLast,
     /// 1-based 탭 번호로 전환 (Cmd+1..9).
     SelectTab(usize),
 }
@@ -81,6 +87,9 @@ const ACTION_NAMES: &[(&str, Action)] = &[
     ("command-history", Action::CommandHistory),
     ("ai-explain", Action::AiExplain),
     ("open-hints", Action::OpenHints),
+    ("toggle-fold-last", Action::ToggleFoldLast),
+    ("unfold-all", Action::UnfoldAll),
+    ("rerun-last", Action::RerunLast),
 ];
 
 impl Action {
@@ -131,6 +140,10 @@ const DEFAULTS: &[(KeyCode, Option<bool>, bool, Action)] = &[
     (KeyCode::KeyC,         Some(false), false, Action::Copy),
     (KeyCode::KeyV,         Some(false), false, Action::Paste),
     (KeyCode::KeyR,         Some(false), false, Action::CommandHistory),
+    (KeyCode::KeyR,         Some(true),  false, Action::RerunLast),
+    // Cmd+Option+[ / ]: 블록 접기 (VS Code·Zed의 fold 조합과 같은 자리)
+    (KeyCode::BracketLeft,  Some(false), true,  Action::ToggleFoldLast),
+    (KeyCode::BracketRight, Some(false), true,  Action::UnfoldAll),
     (KeyCode::ArrowUp,      None,        false, Action::JumpPrevPrompt),
     (KeyCode::ArrowDown,    None,        false, Action::JumpNextPrompt),
     // Cmd+Option+화살표: 페인 포커스 이동

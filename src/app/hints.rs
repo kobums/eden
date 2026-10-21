@@ -95,9 +95,11 @@ impl App {
         let state = self.state.as_ref().unwrap();
         let pane = state.focused_pane();
         let targets: Vec<(String, i64, usize)> = {
+            let folds = pane.session.folds();
             let term = pane.session.term.lock();
             let history = term.grid().history_size() as i64;
-            crate::app::links::visible_urls(&term)
+            let rows = pane.session.view_rows(&folds, &term);
+            crate::app::links::urls_in_rows(&term, &rows)
                 .into_iter()
                 .map(|m| {
                     let url = term.bounds_to_string(*m.start(), *m.end());
@@ -162,17 +164,19 @@ impl App {
         cell_w: f32,
         cell_h: f32,
     ) -> Vec<HintBadge> {
+        let folds = pane.session.folds();
         let term = pane.session.term.lock();
-        let grid = term.grid();
-        let top_abs = grid.history_size() as i64 - grid.display_offset() as i64;
-        let screen = grid.screen_lines() as i64;
+        // 접힌 블록이 있으면 화면 행 ≠ 뷰포트 줄 — 렌더러와 같은 행 목록을 쓴다.
+        let rows = pane.session.view_rows(&folds, &term);
         hints
             .targets
             .iter()
             .filter(|t| t.label.starts_with(&hints.typed))
             .filter_map(|t| {
-                let row = t.abs_line - top_abs;
-                (0..screen).contains(&row).then(|| HintBadge {
+                let row = rows
+                    .iter()
+                    .position(|r| *r == crate::fold::ViewRow::Line(t.abs_line))?;
+                Some(HintBadge {
                     x: rect.x + renderer::PADDING + t.col as f32 * cell_w,
                     y: rect.y + renderer::PADDING + row as f32 * cell_h,
                     label: t.label.clone(),

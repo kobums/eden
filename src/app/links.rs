@@ -48,19 +48,39 @@ fn regex() -> &'static Mutex<RegexSearch> {
 /// 매치는 **현재 그리드 좌표**다. 반환값은 스캔에 쓴 `term` 락이 살아 있는
 /// 동안만 유효하다 — 락을 놓고 나면 PTY 출력으로 좌표가 밀릴 수 있으므로
 /// 프레임을 넘겨 캐시하면 안 된다.
+#[cfg(test)]
 pub(crate) fn visible_urls<T: EventListener>(term: &Term<T>) -> Vec<Match> {
     let grid = term.grid();
-    let cols = grid.columns();
     let screen_lines = grid.screen_lines();
-    if cols == 0 || screen_lines == 0 {
-        return Vec::new();
-    }
-
     // 스크롤을 올렸으면(display_offset > 0) 뷰포트는 그리드 좌표계에서
     // 위로 밀려 있다. 화면 최상단 = Line(-offset).
     let offset = grid.display_offset() as i32;
-    let start = Point::new(Line(-offset), Column(0));
-    let end = Point::new(Line(screen_lines as i32 - 1 - offset), Column(cols - 1));
+    urls_in(term, Line(-offset), Line(screen_lines as i32 - 1 - offset))
+}
+
+/// 화면 행 목록([`crate::fold::ViewRow`])이 실제로 보여 주는 줄만 스캔한다.
+/// 접힌 블록이 있으면 뷰포트와 보이는 줄이 다르고, 접힌 구간은 훑을 필요가
+/// 없다 (수천 줄짜리 출력을 접어 두고 매 프레임 정규식을 돌리지 않는다).
+pub(crate) fn urls_in_rows<T: EventListener>(
+    term: &Term<T>,
+    rows: &[crate::fold::ViewRow],
+) -> Vec<Match> {
+    let history = term.grid().history_size() as i64;
+    crate::fold::line_runs(rows)
+        .into_iter()
+        .flat_map(|(a, b)| urls_in(term, Line((a - history) as i32), Line((b - history) as i32)))
+        .take(MAX_MATCHES)
+        .collect()
+}
+
+/// 그리드 줄 구간 `[top, bottom]`의 평문 URL 매치.
+fn urls_in<T: EventListener>(term: &Term<T>, top: Line, bottom: Line) -> Vec<Match> {
+    let cols = term.grid().columns();
+    if cols == 0 || bottom < top {
+        return Vec::new();
+    }
+    let start = Point::new(top, Column(0));
+    let end = Point::new(bottom, Column(cols - 1));
 
     let mut regex = regex()
         .lock()
@@ -72,10 +92,16 @@ pub(crate) fn visible_urls<T: EventListener>(term: &Term<T>) -> Vec<Match> {
 }
 
 /// `point`(그리드 좌표)를 덮는 평문 URL이 있으면 그 문자열을 돌려준다.
+/// `rows`는 클릭 당시 화면 행 목록 — 접힌 블록이 있으면 뷰포트 밖의 줄도
+/// 화면에 있을 수 있어 뷰포트 스캔으로는 놓친다.
 ///
 /// OSC 8 확인 뒤의 폴백으로만 쓴다 — 명시된 링크가 추론보다 우선이다.
-pub(crate) fn url_at<T: EventListener>(term: &Term<T>, point: Point) -> Option<String> {
-    visible_urls(term)
+pub(crate) fn url_at<T: EventListener>(
+    term: &Term<T>,
+    rows: &[crate::fold::ViewRow],
+    point: Point,
+) -> Option<String> {
+    urls_in_rows(term, rows)
         .into_iter()
         .find(|m| m.contains(&point))
         .map(|m| term.bounds_to_string(*m.start(), *m.end()))
@@ -297,10 +323,42 @@ mod tests {
         let last = Point::new(Line(0), Column(15));
         let dot = Point::new(Line(0), Column(16));
         let off = Point::new(Line(1), Column(0));
-        assert_eq!(url_at(&t, on).as_deref(), Some("https://a.com"));
-        assert_eq!(url_at(&t, last).as_deref(), Some("https://a.com"));
-        assert_eq!(url_at(&t, dot), None, "잘려나간 문장부호 셀은 URL이 아니다");
-        assert_eq!(url_at(&t, off), None);
+        let rows = crate::fold::rows_for(&t, &[]);
+        assert_eq!(url_at(&t, &rows, on).as_deref(), Some("https://a.com"));
+        assert_eq!(url_at(&t, &rows, last).as_deref(), Some("https://a.com"));
+        assert_eq!(
+            url_at(&t, &rows, dot),
+            None,
+            "잘려나간 문장부호 셀은 URL이 아니다"
+        );
+        assert_eq!(url_at(&t, &rows, off), None);
+    }
+
+    #[test]
+    fn urls_in_rows_skips_folded_lines_and_sees_pulled_in_history() {
+        // 화면 5줄, 히스토리 있음. 접힌 범위가 뷰포트 중간을 덮으면 그 안의 URL은
+        // 스캔하지 않고, 접힌 만큼 위로 밀려 들어온 히스토리 줄의 URL은 잡는다.
+        let mut t = term(60, 5, 100);
+        feed(&mut t, "https://top.example\r\n"); // abs 0
+        for i in 1..=6 {
+            feed(&mut t, &format!("https://hidden{i}.example\r\n")); // abs 1..=6
+        }
+        feed(&mut t, "https://bottom.example\r\n"); // abs 7, 커서는 abs 8
+        let history = t.grid().history_size() as i64;
+        assert_eq!(history, 4);
+        let folds = [crate::fold::Fold {
+            key: 0,
+            start: 1,
+            end: 6,
+        }];
+        let rows = crate::fold::rows_for(&t, &folds);
+        // 행: Blank, 0, [접힘], 7, 8
+        let mut found: Vec<String> = urls_in_rows(&t, &rows)
+            .iter()
+            .map(|m| t.bounds_to_string(*m.start(), *m.end()))
+            .collect();
+        found.sort();
+        assert_eq!(found, vec!["https://bottom.example", "https://top.example"]);
     }
 
     #[test]

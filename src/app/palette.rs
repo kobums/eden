@@ -30,6 +30,9 @@ const PALETTE_ACTIONS: &[(&str, Action)] = &[
     ("Command History", Action::CommandHistory),
     ("AI: Explain Last Failure", Action::AiExplain),
     ("Open Link Hints", Action::OpenHints),
+    ("Fold/Unfold Last Block", Action::ToggleFoldLast),
+    ("Unfold All Blocks", Action::UnfoldAll),
+    ("Rerun Last Command", Action::RerunLast),
 ];
 
 /// 팔레트가 무엇을 고르는가.
@@ -145,6 +148,9 @@ impl App {
             Action::CommandHistory => self.open_command_history(),
             Action::AiExplain => self.explain_last_failure(),
             Action::OpenHints => self.open_hints(),
+            Action::ToggleFoldLast => self.toggle_fold_last(),
+            Action::UnfoldAll => self.unfold_all(),
+            Action::RerunLast => self.rerun_last(),
             Action::JumpPrevPrompt => self.jump_to_prompt(-1),
             Action::JumpNextPrompt => self.jump_to_prompt(1),
             Action::Copy => self.copy_selection(),

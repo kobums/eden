@@ -15,6 +15,7 @@
 
 mod action;
 mod ai_bar;
+mod blocks;
 mod clipboard;
 mod explain;
 mod hints;
@@ -627,14 +628,24 @@ impl App {
                     .unwrap_or_default()
             })
             .collect();
+        let fold_lists: Vec<_> = rects
+            .iter()
+            .map(|(id, _)| {
+                tab.root
+                    .pane(*id)
+                    .map(|p| p.session.folds())
+                    .unwrap_or_default()
+            })
+            .collect();
 
         let views: Vec<renderer::PaneView> = rects
             .iter()
-            .zip(block_lists.iter())
-            .filter_map(|((id, rect), blocks)| {
+            .zip(block_lists.iter().zip(fold_lists.iter()))
+            .filter_map(|((id, rect), (blocks, folds))| {
                 tab.root.pane(*id).map(|pane| renderer::PaneView {
                     term: &pane.session.term,
                     blocks,
+                    folds,
                     rect: *rect,
                     focused: *id == focused,
                     // 하이라이트는 검색 대상 페인에만 그린다.

@@ -6,18 +6,19 @@
 
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
-use alacritty_terminal::term::viewport_to_point;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
 use super::mouse_report::{self, ReportKind};
 use super::{App, State};
+use crate::fold::ViewRow;
 use crate::layout::{Divider, Pane, Rect, SplitDir};
 use crate::renderer::PADDING;
+use crate::session::block_containing;
 
 /// 더블/트리플 클릭 판정 간격.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -34,6 +35,12 @@ struct CellHit {
     side: Side,
     col: usize,
     row: usize,
+    /// `point`의 절대 줄 (블록 판정용).
+    abs: i64,
+    /// 접힌 출력의 placeholder 행을 눌렀으면 그 블록의 키.
+    fold: Option<i64>,
+    /// 왼쪽 거터(블록 상태 바 자리)를 눌렀는가.
+    gutter: bool,
 }
 
 impl App {
@@ -63,23 +70,36 @@ impl App {
         let origin_x = rect.x as f64 + PADDING as f64;
         let origin_y = rect.y as f64 + PADDING as f64;
 
+        // 잠금 순서: folds(marks) → term.
+        let folds = pane.session.folds();
         let term = pane.session.term.lock();
         let grid = term.grid();
         let cols = grid.columns();
         let lines = grid.screen_lines();
-        let display_offset = grid.display_offset();
+        let history = grid.history_size() as i64;
+        let rows = pane.session.view_rows(&folds, &term);
         drop(term);
 
         let (col, row, side) = mouse_report::cell_at(
             pos.x, pos.y, origin_x, origin_y, cell_w, cell_h, cols, lines,
         );
-        let point = viewport_to_point(display_offset, Point::new(row, Column(col)));
+        // 화면 행 → 그리드 줄. 접힌 블록이 있으면 뷰포트 공식 대신 행 목록을 본다.
+        // placeholder 행은 접힌 범위의 첫 줄로 친다 (블록 판정이 맞게 된다).
+        let (abs, fold) = match rows.get(row) {
+            Some(ViewRow::Line(abs)) => (*abs, None),
+            Some(ViewRow::Fold(i)) => (folds[*i].start, Some(folds[*i].key)),
+            _ => (0, None),
+        };
+        let point = Point::new(Line((abs - history) as i32), Column(col));
 
         CellHit {
             point,
             side,
             col,
             row,
+            abs,
+            fold,
+            gutter: pos.x < origin_x,
         }
     }
 
@@ -234,9 +254,12 @@ impl App {
                     }
                 }
 
-                // Cmd+클릭: 하이퍼링크(OSC 8 → 평문 URL) 열기, 없으면 블록 전체 선택
+                // Cmd+클릭: 거터면 그 블록 재실행, 아니면 하이퍼링크(OSC 8 →
+                // 평문 URL) 열기, 없으면 블록 전체 선택
                 if self.modifiers.state().super_key() {
-                    if !self.open_hyperlink_at(self.mouse_pos) {
+                    if let Some(block) = self.gutter_block_at(self.mouse_pos) {
+                        self.rerun_block(&block);
+                    } else if !self.open_hyperlink_at(self.mouse_pos) {
                         self.select_block_at(self.mouse_pos);
                     }
                     self.left_button_down = false;
@@ -283,8 +306,23 @@ impl App {
 
         match button_state {
             ElementState::Pressed => {
-                self.left_button_down = true;
                 let hit = Self::grid_point(pane, rect, state, self.mouse_pos);
+
+                // 거터 클릭 = 그 블록 접기/펼치기, placeholder 행 클릭 = 펼치기.
+                // 선택을 시작하지 않는다.
+                if hit.gutter || hit.fold.is_some() {
+                    let blocks = pane.session.blocks();
+                    let cursor_abs = {
+                        let term = pane.session.term.lock();
+                        term.grid().history_size() as i64 + term.grid().cursor.point.line.0 as i64
+                    };
+                    if let Some(block) = block_containing(&blocks, hit.abs, cursor_abs) {
+                        pane.session.toggle_fold(block);
+                        state.window.request_redraw();
+                    }
+                    return;
+                }
+                self.left_button_down = true;
 
                 // 더블/트리플 클릭 판정
                 let now = Instant::now();
@@ -387,10 +425,8 @@ impl App {
             }
             pane.session.write(bytes);
         } else {
-            // 3) 그 외에는 로컬 스크롤백 스크롤.
-            let mut term = pane.session.term.lock();
-            term.scroll_display(Scroll::Delta(lines as i32));
-            drop(term);
+            // 3) 그 외에는 로컬 스크롤백 스크롤 (접힌 블록은 한 행으로 건너뛴다).
+            pane.session.scroll_lines(lines as i32);
         }
         state.window.request_redraw();
     }
@@ -411,11 +447,13 @@ impl App {
         };
         let point = Self::grid_point(pane, rect, state, pos).point;
         let uri = {
+            let folds = pane.session.folds();
             let term = pane.session.term.lock();
+            let rows = pane.session.view_rows(&folds, &term);
             term.grid()[point]
                 .hyperlink()
                 .map(|h| h.uri().to_string())
-                .or_else(|| super::links::url_at(&term, point))
+                .or_else(|| super::links::url_at(&term, &rows, point))
         };
         if let Some(uri) = uri {
             // macOS `open`으로 기본 앱에서 연다
@@ -434,36 +472,45 @@ impl App {
         let Some(pane) = state.active_tab().root.pane(pane_id) else {
             return;
         };
-        let point = Self::grid_point(pane, rect, state, pos).point;
+        let clicked_abs = Self::grid_point(pane, rect, state, pos).abs;
         let blocks = pane.session.blocks();
 
         let mut term = pane.session.term.lock();
         let history = term.grid().history_size() as i64;
         let cols = term.grid().columns();
         let cursor_abs = history + term.grid().cursor.point.line.0 as i64;
-        let clicked_abs = history + point.line.0 as i64;
 
-        for (i, block) in blocks.iter().enumerate() {
-            // 블록의 화면상 범위: 시작(A) ~ 다음 블록 시작 전 줄 (혹은 D-1 / 현재 커서)
-            let span_end = blocks
-                .get(i + 1)
-                .map(|next| next.start_abs - 1)
-                .unwrap_or(cursor_abs);
-            if block.start_abs <= clicked_abs && clicked_abs <= span_end {
-                let sel_end = block
-                    .end_abs
-                    .map(|d| d - 1)
-                    .unwrap_or(span_end)
-                    .max(block.start_abs);
-                let start = Point::new(Line((block.start_abs - history) as i32), Column(0));
-                let end = Point::new(Line((sel_end - history) as i32), Column(cols - 1));
-                let mut selection = Selection::new(SelectionType::Lines, start, Side::Left);
-                selection.update(end, Side::Right);
-                term.selection = Some(selection);
-                break;
-            }
+        if let Some(block) = block_containing(&blocks, clicked_abs, cursor_abs) {
+            // 선택 범위: 시작(A) ~ D-1 (실행 중이면 현재 커서까지)
+            let sel_end = block
+                .end_abs
+                .map(|d| d - 1)
+                .unwrap_or(cursor_abs)
+                .max(block.start_abs);
+            let start = Point::new(Line((block.start_abs - history) as i32), Column(0));
+            let end = Point::new(Line((sel_end - history) as i32), Column(cols - 1));
+            let mut selection = Selection::new(SelectionType::Lines, start, Side::Left);
+            selection.update(end, Side::Right);
+            term.selection = Some(selection);
         }
         drop(term);
         state.window.request_redraw();
+    }
+
+    /// 거터를 눌렀으면 그 자리의 블록 (Cmd+거터 클릭 = 재실행).
+    fn gutter_block_at(&self, pos: PhysicalPosition<f64>) -> Option<crate::session::Block> {
+        let state = self.state.as_ref()?;
+        let (pane_id, rect) = Self::pane_at(state, pos)?;
+        let pane = state.active_tab().root.pane(pane_id)?;
+        let hit = Self::grid_point(pane, rect, state, pos);
+        if !hit.gutter {
+            return None;
+        }
+        let blocks = pane.session.blocks();
+        let cursor_abs = {
+            let term = pane.session.term.lock();
+            term.grid().history_size() as i64 + term.grid().cursor.point.line.0 as i64
+        };
+        block_containing(&blocks, hit.abs, cursor_abs).cloned()
     }
 }
