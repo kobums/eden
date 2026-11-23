@@ -550,6 +550,8 @@ pub(crate) fn render_replay(
     let mut term = Term::new(config, &size, Nop);
     let mut parser: Processor = Processor::new();
     parser.advance(&mut term, replay);
+    // 끝나지 않은 mode 2026 프레임의 출력도 화면에 반영해야 GUI와 같아진다.
+    parser.stop_sync(&mut term);
 
     let grid = term.grid();
     let top = if scrollback {
@@ -719,6 +721,12 @@ mod tests {
             name: name.into(),
             ..info(id, false, Some(0), "/tmp", "")
         }
+    }
+
+    #[test]
+    fn capture_includes_output_after_an_unterminated_sync_frame() {
+        let out = render_replay(20, 3, b"before\r\n\x1b[?2026hafter", false, None);
+        assert_eq!(out, "before\nafter\n");
     }
 
     #[test]

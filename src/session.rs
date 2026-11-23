@@ -5,6 +5,7 @@
 //! 블록/프롬프트 경계를 기록하기 위해서다.
 
 use std::collections::BTreeSet;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -557,9 +558,18 @@ impl Session {
 
 // --- mux 읽기 루프 + OSC 133 스캐너 ---
 
-/// Synchronized output (DEC private mode 2026)의 진입/종료 시퀀스.
-/// 공통 프리픽스 뒤 'h'(진입) 또는 'l'(종료).
-const SYNC_PREFIX: &[u8] = b"\x1b[?2026";
+/// 소켓 읽기 스레드 → 처리 루프 큐 길이. 가득 차면 읽기가 멈춰 배압이 유지된다.
+const OUTPUT_QUEUE: usize = 16;
+
+/// mode 2026 프레임의 마감이 지났는가. 파서는 시간을 스스로 재지 않으므로,
+/// 호출자가 확인해 `stop_sync`를 부르지 않으면 종료 신호 없이 죽은 앱의 페인은
+/// 화면이 영영 멈춘다.
+fn sync_expired(parser: &Processor, now: Instant) -> bool {
+    parser
+        .sync_timeout()
+        .sync_timeout()
+        .is_some_and(|d| d <= now)
+}
 
 fn reader_loop(
     mut stream: std::os::unix::net::UnixStream,
@@ -572,9 +582,6 @@ fn reader_loop(
 ) {
     let mut parser = Processor::new();
     let mut scanner = Osc133Scanner::default();
-    // synchronized output 상태: sync 중에는 redraw를 억제하고, 종료 시 한 번에 그린다.
-    let mut sync = false;
-    let mut sync_carry: Vec<u8> = Vec::new();
     let mut cwd_carry: Vec<u8> = Vec::new();
     // OSC 9/777 감시. 프리픽스가 둘이라 carry도 둘이다 — 한 버퍼를 공유하면
     // 한쪽 스캐너가 잘라낸 조각을 다른 쪽이 놓친다.
@@ -587,9 +594,39 @@ fn reader_loop(
     // 건너뛸 필요가 없다.
     let mut replay_pending = attached;
 
+    // 마감 시각까지만 기다리려면 수신에 타임아웃이 필요한데, 소켓 자체에 걸면
+    // 메시지 중간에서 끊겨 프레이밍이 깨진다. 그래서 읽기를 스레드로 분리한다.
+    let (tx, rx) = std::sync::mpsc::sync_channel(OUTPUT_QUEUE);
+    std::thread::spawn(move || {
+        while let Ok(msg) = mux::read_msg(&mut stream) {
+            if tx.send(msg).is_err() {
+                break;
+            }
+        }
+    });
+
     loop {
-        match mux::read_msg(&mut stream) {
-            Ok(MuxMsg::Output(data)) => {
+        // 출력이 계속 들어와도 마감은 지켜야 하므로 수신보다 먼저 확인한다.
+        if sync_expired(&parser, Instant::now()) {
+            parser.stop_sync(&mut *term.lock());
+            proxy.send_event(Event::Wakeup);
+            continue;
+        }
+        let msg = match parser.sync_timeout().sync_timeout() {
+            Some(deadline) => {
+                match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(msg) => msg,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break, // 소켓 종료(데몬 죽음 등)
+                }
+            }
+            None => match rx.recv() {
+                Ok(msg) => msg,
+                Err(_) => break, // 소켓 종료(데몬 죽음 등)
+            },
+        };
+        match msg {
+            MuxMsg::Output(data) => {
                 {
                     let mut term = term.lock();
                     scanner.process(&mut term, &mut parser, &marks, &proxy, &data);
@@ -606,21 +643,18 @@ fn reader_loop(
                         proxy.send_notify(title, body);
                     }
                 }
-                // mode 2026 진입/종료를 감시해 프레임 원자성을 확보한다.
-                sync = watch_sync(sync, &mut sync_carry, &data);
-                if !sync {
+                // mode 2026 프레임이 진행 중이면 끝날 때 한 번에 그린다.
+                if parser.sync_timeout().sync_timeout().is_none() {
                     proxy.send_event(Event::Wakeup);
                 }
             }
-            Ok(MuxMsg::Focus) => proxy.send_focus(),
-            Ok(MuxMsg::Name(new_name)) => {
+            MuxMsg::Focus => proxy.send_focus(),
+            MuxMsg::Name(new_name) => {
                 *name.lock().unwrap() = new_name;
                 proxy.send_renamed();
             }
             // 셸 종료
-            Ok(MuxMsg::Exit) => break,
-            // 소켓 종료(데몬 죽음 등)
-            Err(_) => break,
+            MuxMsg::Exit => break,
         }
     }
     proxy.send_event(Event::Exit);
@@ -678,32 +712,6 @@ fn parse_osc777(payload: &[u8]) -> Option<(String, String)> {
     let rest = s.strip_prefix("notify;")?;
     let (title, body) = rest.split_once(';').unwrap_or((rest, ""));
     Some((title.to_string(), body.to_string()))
-}
-
-/// 청크에서 mode 2026 진입(`h`)/종료(`l`)를 감지해 최신 sync 상태를 돌려준다.
-/// 청크 경계에 걸친 시퀀스를 위해 carry에 최대 7바이트를 이월한다.
-fn watch_sync(prev: bool, carry: &mut Vec<u8>, chunk: &[u8]) -> bool {
-    let mut scan = std::mem::take(carry);
-    scan.extend_from_slice(chunk);
-
-    let mut state = prev;
-    let plen = SYNC_PREFIX.len();
-    if scan.len() > plen {
-        for i in 0..=scan.len() - plen - 1 {
-            if &scan[i..i + plen] == SYNC_PREFIX {
-                match scan[i + plen] {
-                    b'h' => state = true,
-                    b'l' => state = false,
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // 다음 경계용 carry: 끝 (plen)바이트 유지
-    let keep = plen.min(scan.len());
-    *carry = scan[scan.len() - keep..].to_vec();
-    state
 }
 
 #[derive(Default)]
@@ -944,6 +952,7 @@ fn last_command_duration(marks: &[Mark]) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::TermMode;
 
     /// 파서가 보내는 응답(PtyWrite 등)을 붙잡는 테스트용 리스너.
@@ -964,6 +973,21 @@ mod tests {
         };
         let term = Term::new(term_config(100, enabled), &size, capture.clone());
         (term, Processor::new(), capture)
+    }
+
+    #[test]
+    fn unterminated_sync_frame_expires_and_flushes() {
+        let (mut term, mut parser, _capture) = kitty_term(false);
+        parser.advance(&mut term, b"\x1b[?2026hstuck");
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, ' ', "프레임은 보류된다");
+
+        let deadline = parser.sync_timeout().sync_timeout().expect("마감이 있다");
+        assert!(!sync_expired(&parser, deadline - Duration::from_millis(1)));
+        assert!(sync_expired(&parser, deadline));
+
+        parser.stop_sync(&mut term);
+        assert_eq!(term.grid()[Line(0)][Column(0)].c, 's');
+        assert!(!sync_expired(&parser, deadline));
     }
 
     #[test]
