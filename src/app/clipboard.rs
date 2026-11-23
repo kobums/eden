@@ -50,15 +50,7 @@ impl App {
             .lock()
             .mode()
             .contains(TermMode::BRACKETED_PASTE);
-        if bracketed {
-            let mut bytes = b"\x1b[200~".to_vec();
-            bytes.extend_from_slice(text.as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~");
-            pane.session.write(bytes);
-        } else {
-            // 개행이 실행으로 이어지는 사고를 줄이기 위해 \n → \r 정규화
-            pane.session.write(text.replace('\n', "\r").into_bytes());
-        }
+        pane.session.write(encode_paste(text, bracketed));
     }
 
     /// 명령줄을 포커스된 페인의 입력줄에 넣는다 — **실행하지 않는다**.
@@ -77,7 +69,7 @@ impl App {
         if bracketed {
             self.paste_text(cmd);
         } else {
-            session.write(cmd.replace(['\r', '\n'], " ").into_bytes());
+            session.write(encode_insert(cmd));
         }
     }
 
@@ -107,6 +99,40 @@ impl App {
     }
 }
 
+/// 붙여넣기에 남겨도 되는 제어 문자는 탭과 개행뿐이다. 나머지는 xterm처럼
+/// 공백으로 바꾼다 — ESC가 살아 있으면 `ESC[201~`로 브래킷을 닫고 뒤의 내용을
+/// 곧바로 실행시킬 수 있고, `0x03` 같은 문자는 셸의 줄 편집을 조작한다.
+fn sanitize_paste(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\t' | '\n' | '\r' => c,
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect()
+}
+
+/// 붙여넣기 바이트. 브래킷이 없으면 프로그램이 Enter로 받도록 개행을 CR로 맞춘다.
+fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    let clean = sanitize_paste(text);
+    if bracketed {
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend_from_slice(clean.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        clean.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
+}
+
+/// 브래킷 없는 입력줄에 명령을 넣는 바이트. 개행은 곧 실행이고 탭은 자동 완성을
+/// 부르므로 공백으로 바꿔 한 줄로 만든다.
+fn encode_insert(cmd: &str) -> Vec<u8> {
+    sanitize_paste(cmd)
+        .replace(['\r', '\n', '\t'], " ")
+        .into_bytes()
+}
+
 /// 경로를 셸에 그대로 넣어도 안전하게 인용한다.
 ///
 /// 특수문자가 없으면 원문 그대로, 있으면 작은따옴표로 감싼다. 내부의 `'`는
@@ -124,7 +150,27 @@ fn shell_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote;
+    use super::{encode_insert, encode_paste, shell_quote};
+
+    #[test]
+    fn pasted_text_cannot_close_the_bracket() {
+        let out = encode_paste("safe\x1b[201~rm -rf x\n", true);
+        assert_eq!(out, b"\x1b[200~safe [201~rm -rf x\n\x1b[201~");
+    }
+
+    #[test]
+    fn paste_replaces_control_chars_but_keeps_tabs_and_korean() {
+        assert_eq!(encode_paste("a\x03b\x7fc\u{9b}d", false), b"a b c d");
+        assert_eq!(
+            encode_paste("한\t글\r\n끝\n", false),
+            "한\t글\r끝\r".as_bytes()
+        );
+    }
+
+    #[test]
+    fn inserted_command_never_contains_an_executing_byte() {
+        assert_eq!(encode_insert("ls\n\rrm\tx\x03\x1b[A"), b"ls  rm x  [A");
+    }
 
     #[test]
     fn plain_paths_pass_through_unquoted() {
