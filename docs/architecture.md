@@ -78,6 +78,7 @@ Term은 GUI 쪽에 남기 때문에 선택·스크롤·블록·AI 등 모든 기
 | `mod.rs` | `Renderer` 정의, wgpu 초기화(파이프라인·버퍼), 프레임 조립과 제출 |
 | `text.rs` | glyph atlas(래스터라이즈·shelf packing·캐싱), 텍스트 한 줄 그리기·폭 계산·말줄임 |
 | `pane.rs` | 터미널 그리드 — 셀 배경/글리프, 커서, 블록 거터, IME preedit |
+| `style.rs` | 글자 스타일 — 글꼴 변형 선택, 굵게·기울임 합성, 밑줄 5종·취소선 |
 | `chrome.rs` | 탭 바, 하단 상태바, AI 바, 팔레트 오버레이 |
 | `color.rs` | `Theme`, ANSI/256색 → RGB, 크롬 색 파생 |
 
