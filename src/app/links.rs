@@ -9,6 +9,8 @@
 //! 절대 줄 번호(`AbsMatch`)가 아니라 그리드 좌표(`Match`) 그대로 쓴다 —
 //! 스캔한 그 프레임 안에서만(같은 락 안에서) 소비하므로 좌표가 밀릴 틈이 없다.
 
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use alacritty_terminal::Term;
@@ -25,13 +27,107 @@ const MAX_MATCHES: usize = 256;
 ///
 /// `www.` 같은 스킴 없는 휴리스틱은 일부러 안 한다 — 오탐이 많고,
 /// 스킴이 없으면 `open`에 넘길 수도 없다.
-const URL_REGEX: &str =
-    r#"(https?://|file://|git://|ssh:|ftp://|mailto:)[^\x00-\x1f\x7f-\x9f<>"\s{}⟨⟩`^]+"#;
+const URL_REGEX: &str = r#"(https?://|file://|ftp://|mailto:)[^\x00-\x1f\x7f-\x9f<>"\s{}⟨⟩`^]+"#;
 
 /// 끝 문장부호 정리 후 이것만 남으면 매치를 버린다 (`https://.` 같은 입력).
-const BARE_SCHEMES: &[&str] = &[
-    "https://", "http://", "file://", "git://", "ssh:", "ftp://", "mailto:",
+const BARE_SCHEMES: &[&str] = &["https://", "http://", "file://", "ftp://", "mailto:"];
+
+/// `file://` 링크를 바로 열어도 되는 확장자 — 기본 앱이 내용을 *보여 주기만* 하는
+/// 문서·데이터·미디어. 앱·스크립트·설치 파일은 `open`이 곧 실행이라 넣지 않는다.
+const SAFE_FILE_EXTENSIONS: &[&str] = &[
+    "txt", "md", "log", "json", "yaml", "yml", "toml", "csv", "tsv", "pdf", "png", "jpg", "jpeg",
+    "gif", "webp", "heic", "mp3", "wav", "mp4", "mov", "rs", "c", "h", "cc", "cpp", "hpp", "go",
+    "java", "kt", "swift", "zig", "css",
 ];
+
+/// 링크를 어떻게 열지.
+#[derive(Debug, PartialEq, Eq)]
+enum LinkTarget {
+    Url(String),
+    File(PathBuf),
+}
+
+/// 앱이 보낸 URI를 해석한다. 허용하지 않는 스킴·다른 호스트의 파일은 None.
+///
+/// OSC 8은 화면 글자와 실제 주소가 다를 수 있으므로, 사용자 정의 스킴처럼
+/// 임의의 앱을 깨우는 주소는 열지 않는다.
+fn classify_link(uri: &str, is_local_host: impl Fn(&str) -> bool) -> Option<LinkTarget> {
+    if uri.chars().any(char::is_control) {
+        return None;
+    }
+    let (scheme, rest) = uri.split_once(':')?;
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" | "ftp" if rest.starts_with("//") => Some(LinkTarget::Url(uri.into())),
+        "mailto" => Some(LinkTarget::Url(uri.into())),
+        "file" => {
+            let rest = rest.strip_prefix("//")?;
+            let slash = rest.find('/')?;
+            let (host, path) = rest.split_at(slash);
+            if !host.is_empty() && !is_local_host(host) {
+                return None; // SSH 너머의 경로를 이 Mac의 같은 경로로 열면 안 된다
+            }
+            let path = path.split(['?', '#']).next()?;
+            let decoded = String::from_utf8(crate::osc::percent_decode(path.as_bytes())).ok()?;
+            (!decoded.contains('\0')).then(|| LinkTarget::File(decoded.into()))
+        }
+        _ => None,
+    }
+}
+
+/// 파일을 바로 열지 않고 Finder에서 위치만 보여 줘야 하는가.
+fn should_reveal(is_dir: bool, executable: bool, extension: Option<&str>) -> bool {
+    let extension = extension.map(str::to_ascii_lowercase);
+    if is_dir {
+        // 확장자 있는 폴더는 `.app` 같은 번들일 수 있다.
+        return extension.is_some();
+    }
+    executable
+        || !extension
+            .as_deref()
+            .is_some_and(|e| SAFE_FILE_EXTENSIONS.contains(&e))
+}
+
+fn is_local_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let mut buf = [0u8; 256];
+    // SAFETY: 길이를 넘겨 준 버퍼에 호스트 이름을 쓴다.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return false;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let Ok(local) = std::str::from_utf8(&buf[..end]) else {
+        return false;
+    };
+    let short = |h: &'_ str| h.strip_suffix(".local").unwrap_or(h).to_ascii_lowercase();
+    short(host) == short(local)
+}
+
+/// 링크를 macOS `open`으로 연다 (Cmd+클릭·링크 힌트 공용).
+pub(crate) fn open_link(uri: &str) {
+    let mut open = std::process::Command::new("open");
+    match classify_link(uri, is_local_host) {
+        Some(LinkTarget::Url(url)) => {
+            open.arg(url);
+        }
+        Some(LinkTarget::File(path)) => {
+            // 심볼릭 링크를 풀어 실제 대상으로 판단한다 (`a.txt` → `Evil.app`).
+            let Ok(real) = path.canonicalize() else {
+                return;
+            };
+            let Ok(meta) = real.metadata() else { return };
+            let executable = meta.permissions().mode() & 0o111 != 0;
+            let ext = real.extension().and_then(|e| e.to_str());
+            if should_reveal(meta.is_dir(), !meta.is_dir() && executable, ext) {
+                open.arg("-R");
+            }
+            open.arg(real);
+        }
+        None => return,
+    }
+    let _ = open.spawn();
+}
 
 /// 컴파일된 정규식. `RegexSearch`는 DFA 캐시 때문에 스캔 시 `&mut`가
 /// 필요하므로 `OnceLock`만으로는 안 되고 Mutex로 감싼다. 스캔은 메인
@@ -167,6 +263,59 @@ mod tests {
     use alacritty_terminal::grid::Scroll;
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::Processor;
+
+    #[test]
+    fn only_known_schemes_are_openable() {
+        let local = |_: &str| true;
+        assert!(matches!(
+            classify_link("HTTPS://a.com/x", local),
+            Some(LinkTarget::Url(_))
+        ));
+        assert!(matches!(
+            classify_link("mailto:a@b.c", local),
+            Some(LinkTarget::Url(_))
+        ));
+        for bad in [
+            "x-evil://run",
+            "ssh://-oProxyCommand=x/h",
+            "javascript:alert(1)",
+            "-a",
+            "/tmp/x",
+            "http:no-slashes",
+            "https://a.com/\x07",
+        ] {
+            assert_eq!(classify_link(bad, local), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn file_links_decode_and_reject_remote_hosts() {
+        let local = |h: &str| h == "mac";
+        assert_eq!(
+            classify_link("file://mac/tmp/my%20f.txt#L3", local),
+            Some(LinkTarget::File("/tmp/my f.txt".into()))
+        );
+        assert_eq!(
+            classify_link("file:///tmp/a", local),
+            Some(LinkTarget::File("/tmp/a".into()))
+        );
+        assert_eq!(classify_link("file://server/tmp/a", local), None);
+        assert_eq!(classify_link("file:///tmp/a%00.txt", local), None);
+    }
+
+    #[test]
+    fn runnable_files_are_revealed_not_opened() {
+        for ext in [
+            "app", "command", "terminal", "pkg", "scpt", "html", "sh", "py",
+        ] {
+            assert!(should_reveal(false, false, Some(ext)), "{ext}");
+        }
+        assert!(should_reveal(false, false, None)); // 확장자 없는 바이너리
+        assert!(should_reveal(false, true, Some("txt"))); // 실행 권한
+        assert!(should_reveal(true, false, Some("app"))); // 번들
+        assert!(!should_reveal(true, false, None)); // 일반 폴더
+        assert!(!should_reveal(false, false, Some("PDF")));
+    }
 
     use crate::session::TermSize;
 

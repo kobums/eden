@@ -456,8 +456,7 @@ impl App {
                 .or_else(|| super::links::url_at(&term, &rows, point))
         };
         if let Some(uri) = uri {
-            // macOS `open`으로 기본 앱에서 연다
-            let _ = std::process::Command::new("open").arg(&uri).spawn();
+            super::links::open_link(&uri);
             return true;
         }
         false

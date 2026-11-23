@@ -146,7 +146,7 @@ impl App {
                         hints.typed = typed;
                     }
                     if let Some(target) = hints.targets.iter().find(|t| t.label == hints.typed) {
-                        let _ = std::process::Command::new("open").arg(&target.url).spawn();
+                        super::links::open_link(&target.url);
                         self.hints = None;
                     }
                 }
