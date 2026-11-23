@@ -16,14 +16,20 @@ _eden_precmd() {
   fi
   printf '\e]133;A\a'
   # OSC 7: 현재 작업 디렉터리 보고 (상태바에서 사용)
-  printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}"
+  # 폴더 이름에 든 제어 문자가 시퀀스를 끊지 못하게 인코딩한다.
+  printf '\e]7;file://%s%s\a' "${HOST}" "$(_eden_urlencode "$PWD" 4096)"
 }
 
 # 바이트 단위 퍼센트 인코딩. LC_ALL=C로 멀티바이트(한글)를 바이트로 쪼갠다.
-# 512바이트에서 자른다 — 목록 표시용이라 그 이상은 의미가 없다.
+# 기본 512바이트에서 자른다 — 목록 표시용이라 그 이상은 의미가 없다 (두 번째 인자로 변경).
 _eden_urlencode() {
-  local LC_ALL=C s="${1[1,512]}" out="" c
+  local LC_ALL=C s="${1[1,${2:-512}]}" out="" c
   local -i i
+  # 흔한 경로는 프롬프트마다 서브셸을 띄우지 않고 바로 돌려준다.
+  if [[ "$s" != *[^a-zA-Z0-9._~/-]* ]]; then
+    print -rn -- "$s"
+    return
+  fi
   for (( i = 1; i <= ${#s}; i++ )); do
     c="${s[i]}"
     case "$c" in

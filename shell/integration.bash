@@ -31,7 +31,8 @@ _eden_precmd() {
   fi
   printf '\033]133;A\007'
   # OSC 7: 현재 작업 디렉터리 보고 (상태바에서 사용)
-  printf '\033]7;file://%s%s\007' "${HOSTNAME}" "${PWD}"
+  # 폴더 이름에 든 제어 문자가 시퀀스를 끊지 못하게 인코딩한다.
+  printf '\033]7;file://%s%s\007' "${HOSTNAME}" "$(_eden_urlencode "$PWD" 4096)"
 }
 
 # bash에는 preexec 훅이 없어 DEBUG 트랩으로 흉내낸다.
@@ -51,7 +52,12 @@ _eden_preexec() {
 
 # 바이트 단위 퍼센트 인코딩 (bash 3.2 호환). LC_ALL=C로 멀티바이트를 바이트로 쪼갠다.
 _eden_urlencode() {
-  local LC_ALL=C s="${1:0:512}" out="" c i
+  local LC_ALL=C s="${1:0:${2:-512}}" out="" c i
+  # 흔한 경로는 프롬프트마다 서브셸을 띄우지 않고 바로 돌려준다.
+  case "$s" in
+    *[!a-zA-Z0-9._~/-]*) ;;
+    *) printf '%s' "$s"; return ;;
+  esac
   for (( i = 0; i < ${#s}; i++ )); do
     c="${s:$i:1}"
     case "$c" in
