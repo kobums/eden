@@ -5,9 +5,13 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 
 use super::color::{ansi_to_rgb, mix};
+use super::style::{self, DecorationCell, FontStyle};
 use super::text::FontSize;
 use super::{BgInstance, PADDING, PaneView, Renderer, TextInstance};
 use crate::fold::{Fold, ViewRow};
+
+/// SGR 2(흐리게) 글자를 배경 쪽으로 옮기는 비율.
+const DIM_TEXT: f32 = 0.35;
 
 impl Renderer {
     /// 페인 사각형에서 그리드 크기(열, 행)를 계산한다.
@@ -103,6 +107,10 @@ impl Renderer {
 
                 let mut fg = ansi_to_rgb(&cell.fg, &theme);
                 let mut bg = ansi_to_rgb(&cell.bg, &theme);
+                // SGR 2(흐리게): 뒤집기 전에 전경을 그 셀의 배경 쪽으로 옮긴다.
+                if flags.contains(Flags::DIM) {
+                    fg = mix(fg, bg, DIM_TEXT);
+                }
                 if flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -156,9 +164,38 @@ impl Renderer {
                     });
                 }
 
+                // 밑줄·취소선. 공백에도 그어야 하므로 글리프보다 먼저 처리한다.
+                let decorated = flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
+                    && !flags.contains(Flags::HIDDEN);
+                if decorated {
+                    let mut line = cell
+                        .underline_color()
+                        .map_or(fg, |color| ansi_to_rgb(&color, &theme));
+                    if !view.focused && theme.inactive_dim > 0.0 {
+                        line = mix(line, theme.bg, theme.inactive_dim);
+                    }
+                    let area = DecorationCell {
+                        x,
+                        y,
+                        width: self.cell_width * width_cells,
+                        height: self.cell_height,
+                        ascent: self.ascent,
+                        scale: self.scale,
+                    };
+                    style::decoration_rects(flags, area, |rect| {
+                        bg_instances.push(BgInstance {
+                            rect,
+                            color: [line[0], line[1], line[2], 1.0],
+                        });
+                    });
+                }
+
                 // 하이퍼링크(OSC 8 또는 평문 URL): 밑줄로 클릭 가능함을 표시.
                 // 겹치면 어차피 같은 밑줄이고, 클릭 쪽에서 OSC 8이 우선한다.
-                if cell.hyperlink().is_some() || urls.iter().any(|m| m.contains(&point)) {
+                let has_underline = decorated && flags.intersects(Flags::ALL_UNDERLINES);
+                if !has_underline
+                    && (cell.hyperlink().is_some() || urls.iter().any(|m| m.contains(&point)))
+                {
                     bg_instances.push(BgInstance {
                         rect: [
                             x,
@@ -177,7 +214,7 @@ impl Renderer {
                 // 주의: self.glyph는 &mut self가 필요하므로 lock 밖으로 문자를 모으는
                 // 대신, FairMutex 잠금 중 atlas 업로드를 허용한다 (queue.write_texture는
                 // 즉시 반환되므로 잠금 시간에 미치는 영향은 작다).
-                if let Some(glyph) = self.glyph(c) {
+                if let Some(glyph) = self.glyph_styled(c, FontStyle::from_flags(flags)) {
                     text_instances.push(TextInstance {
                         rect: [
                             x + glyph.offset[0],

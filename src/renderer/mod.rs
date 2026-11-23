@@ -9,6 +9,7 @@
 mod chrome;
 mod color;
 mod pane;
+mod style;
 mod text;
 
 use std::sync::Arc;
@@ -23,6 +24,7 @@ use crate::fold::Fold;
 use crate::layout::Rect;
 use crate::session::{Block, EventProxy};
 use color::Theme;
+use style::FontStyle;
 use text::Atlas;
 
 /// 한 프레임을 그리는 데 필요한 전부.
@@ -127,6 +129,31 @@ fn expand_home(path: &str) -> String {
     }
 }
 
+/// 주 폰트와 같은 패밀리의 변형을 읽는다 — `[굵게, 기울임, 굵은 기울임]`.
+/// Menlo는 한 `.ttc`에 네 스타일이 들어 있고, 나머지는 파일 이름으로 찾는다.
+fn load_styled_fonts(primary: Option<&str>) -> [Option<fontdue::Font>; 3] {
+    let Some(primary) = primary.map(std::path::Path::new) else {
+        return [None, None, None];
+    };
+    let file_name = primary.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let load = |path: &std::path::Path, collection_index: u32| {
+        let bytes = std::fs::read(path).ok()?;
+        let settings = fontdue::FontSettings {
+            collection_index,
+            ..Default::default()
+        };
+        fontdue::Font::from_bytes(bytes, settings).ok()
+    };
+    [FontStyle::Bold, FontStyle::Italic, FontStyle::BoldItalic].map(|font_style| {
+        if file_name == "Menlo.ttc" {
+            return load(primary, font_style.face_index()? as u32 + 1);
+        }
+        style::sibling_names(file_name, font_style)
+            .iter()
+            .find_map(|name| load(&primary.with_file_name(name), 0))
+    })
+}
+
 /// UI 크롬 폰트는 본문보다 작다 (iTerm2 탭 텍스트).
 const UI_FONT_SCALE: f32 = 0.8;
 
@@ -172,6 +199,8 @@ pub struct Renderer {
     fonts: Vec<fontdue::Font>,
     /// fonts와 인덱스 대응: PUA(파워라인 등) 글리프를 이 폰트에서 찾아도 되는가.
     pua_ok: Vec<bool>,
+    /// 주 폰트의 굵게·기울임·굵은 기울임 변형. 없으면 글리프를 합성한다.
+    styled_fonts: [Option<fontdue::Font>; 3],
     /// 현재 논리 폰트 크기(pt). 시작은 설정 파일 값이고, Cmd+= / Cmd+- 로
     /// 런타임에 바뀔 수 있다 (Cmd+0이 설정 값으로 되돌린다).
     base_font_size: f32,
@@ -261,6 +290,7 @@ impl Renderer {
                 Some(font)
             })
             .expect("고정폭 폰트를 찾지 못함");
+        let styled_fonts = load_styled_fonts(primary_path.as_deref());
         let mut fonts = vec![primary];
         // PUA 글리프를 믿고 찾아도 되는 폰트 표시 (fonts와 인덱스 대응).
         // 일반 폴백(한글 등)은 PUA에 엉뚱한 글리프를 돌려줄 수 있어 제외한다.
@@ -479,6 +509,7 @@ impl Renderer {
             text_capacity: 1024,
             atlas,
             fonts,
+            styled_fonts,
             pua_ok,
             base_font_size: cfg_font_size,
             scale,

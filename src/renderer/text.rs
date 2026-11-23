@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use unicode_width::UnicodeWidthChar;
 
+use super::style::{self, Bitmap, FontStyle};
 use super::{Renderer, TextInstance};
 
 pub(super) const ATLAS_SIZE: u32 = 2048;
@@ -28,7 +29,7 @@ pub(super) enum FontSize {
 
 pub(super) struct Atlas {
     pub(super) texture: wgpu::Texture,
-    glyphs: HashMap<(char, FontSize), Option<Glyph>>,
+    glyphs: HashMap<(char, FontSize, FontStyle), Option<Glyph>>,
     cursor_x: u32,
     cursor_y: u32,
     row_height: u32,
@@ -75,10 +76,19 @@ impl Renderer {
         self.glyph_sized(c, FontSize::Term)
     }
 
+    /// 터미널 본문 크기의 스타일 글리프.
+    pub(super) fn glyph_styled(&mut self, c: char, style: FontStyle) -> Option<Glyph> {
+        self.glyph_with(c, FontSize::Term, style)
+    }
+
     /// 글리프를 atlas에서 찾거나 새로 래스터라이즈해 올린다.
     /// 터미널 본문(Term)과 UI 크롬(Ui, 더 작은 크기) 두 크기를 캐싱한다.
     pub(super) fn glyph_sized(&mut self, c: char, size: FontSize) -> Option<Glyph> {
-        let key = (c, size);
+        self.glyph_with(c, size, FontStyle::Regular)
+    }
+
+    fn glyph_with(&mut self, c: char, size: FontSize, style: FontStyle) -> Option<Glyph> {
+        let key = (c, size, style);
         if let Some(cached) = self.atlas.glyphs.get(&key) {
             return *cached;
         }
@@ -91,7 +101,15 @@ impl Renderer {
         // 단 PUA(사용자 영역, powerline 아이콘 등)는 일반 폴백 폰트가 엉뚱한
         // 글리프를 돌려주는 경우가 있어 주 폰트와 Nerd Font 폴백(pua_ok)에서만 찾는다.
         let is_pua = ('\u{E000}'..='\u{F8FF}').contains(&c);
-        let font = if is_pua {
+        // 변형 글꼴에 글자가 있으면 그대로 쓰고, 없으면(한글 폴백 등) 기본 글꼴을
+        // 합성한다. 파워라인 아이콘은 칸에 맞물려야 하므로 기울이거나 굵게 하지 않는다.
+        let face = style
+            .face_index()
+            .and_then(|i| self.styled_fonts[i].as_ref())
+            .filter(|f| f.lookup_glyph_index(c) != 0);
+        let font = if face.is_some() {
+            face
+        } else if is_pua {
             self.fonts
                 .iter()
                 .zip(&self.pua_ok)
@@ -101,12 +119,26 @@ impl Renderer {
             self.fonts.iter().find(|f| f.lookup_glyph_index(c) != 0)
         };
         let glyph = if let Some(font) = font {
-            let (metrics, bitmap) = font.rasterize(c, px);
+            let (metrics, pixels) = font.rasterize(c, px);
             if metrics.width == 0 || metrics.height == 0 {
                 None
             } else {
-                let w = metrics.width as u32;
-                let h = metrics.height as u32;
+                let mut bitmap = Bitmap {
+                    pixels,
+                    width: metrics.width,
+                    height: metrics.height,
+                    dx: 0,
+                };
+                if face.is_none() && !is_pua {
+                    if style.is_bold() {
+                        bitmap = style::embolden(&bitmap, (px / 18.0).round().max(1.0) as usize);
+                    }
+                    if style.is_italic() {
+                        bitmap = style::shear(&bitmap, metrics.ymin, 0.2);
+                    }
+                }
+                let w = bitmap.width as u32;
+                let h = bitmap.height as u32;
                 // shelf packing
                 if self.atlas.cursor_x + w + 1 > ATLAS_SIZE {
                     self.atlas.cursor_x = 0;
@@ -127,7 +159,7 @@ impl Renderer {
                         origin: wgpu::Origin3d { x, y, z: 0 },
                         aspect: wgpu::TextureAspect::All,
                     },
-                    &bitmap,
+                    &bitmap.pixels,
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(w),
@@ -150,9 +182,9 @@ impl Renderer {
                         w as f32 * inv,
                         h as f32 * inv,
                     ],
-                    size: [metrics.width as f32, metrics.height as f32],
+                    size: [w as f32, h as f32],
                     offset: [
-                        metrics.xmin as f32,
+                        (metrics.xmin + bitmap.dx) as f32,
                         // 셀 상단 → 글리프 상단: baseline(ascent) 위로 (height + ymin)만큼
                         ascent - metrics.height as f32 - metrics.ymin as f32,
                     ],
